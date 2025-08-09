@@ -6,7 +6,7 @@ import io
 import time
 
 picam2 = Picamera2()
-config = picam2.create_still_configuration(transform=Transform(vflip=1))
+config = picam2.create_still_configuration(transform=Transform(vflip=1, hflip=1))
 picam2.configure(config)
 
 picam2.start()

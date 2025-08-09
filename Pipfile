@@ -4,6 +4,9 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
+sparkfun-qwiic-dual-encoder-reader = "*"
+sparkfun-qwiic-icm20948 = "*"
+sparkfun-qwiic-scmd = "*"
 
 [dev-packages]
 

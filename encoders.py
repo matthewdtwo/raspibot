@@ -5,6 +5,8 @@ import sys
 
 def runExample():
 
+	#  roughly 2400 
+
 	print("\nSparkFun Qwiic Dual Encoder Reader   Example 1\n")
 	myEncoders = qwiic_dual_encoder_reader.QwiicDualEncoderReader()
 
