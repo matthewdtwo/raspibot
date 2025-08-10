@@ -16,6 +16,8 @@ def runExample():
 		return
 
 	myEncoders.begin()
+	myEncoders.set_count1(0)
+	myEncoders.set_count2(0)
 
 	while True:
 

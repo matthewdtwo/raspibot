@@ -36,11 +36,11 @@ def runExample():
 		for speed in range(20,255):
 			print(speed)
 			myMotor.set_drive(R_MTR,FWD,speed)
-			myMotor.set_drive(L_MTR,BWD,speed)
+			myMotor.set_drive(L_MTR,FWD,speed)
 			time.sleep(.05)
 		for speed in range(254,20, -1):
 			print(speed)
-			myMotor.set_drive(R_MTR,FWD,speed)
+			myMotor.set_drive(R_MTR,BWD,speed)
 			myMotor.set_drive(L_MTR,BWD,speed)
 			time.sleep(.05)
 

@@ -1,0 +1,14 @@
+[project]
+name = "raspibot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.1.1",
+    "langchain-ollama>=0.3.6",
+    "picamera2>=0.3.30",
+    "sparkfun-qwiic-dual-encoder-reader>=0.0.2",
+    "sparkfun-qwiic-icm20948>=2.0.1",
+    "sparkfun-qwiic-scmd>=2.0.0",
+]
