@@ -141,35 +141,52 @@ class Robot:
 
         Positive deg => CCW, Negative => CW.
         """
-        # Zero heading to current orientation for a relative rotation
+        # Get current heading as our starting point for relative rotation
         try:
-            self.imu.calibrate_zero(samples=15)
+            start_heading = self.imu.get_heading()
         except Exception:
             # If IMU not available, do nothing
             return
 
-        target_rad = math.radians(deg)
+        target_heading = start_heading + deg
 
-        # Control parameters - much more conservative
-        dt = 0.06  # Slower loop for stability
-        tol_deg = 1.8  # Reasonable tolerance
-        deadband_deg = 1.0  # Moderate deadband
-        hold_time = 0.35  # Reasonable hold time
-        tol_rad = math.radians(tol_deg)
-        deadband_rad = math.radians(deadband_deg)
+        # Control parameters - balanced for accuracy
+        dt = 0.05  # Moderate updates
+        tol_deg = 1.5  # Tighter tolerance for better accuracy
+        deadband_deg = 0.5  # Smaller deadband for less oscillation
+        hold_time = 0.8  # Longer hold time for stability
         max_turn_speed = min(TURN_MAX_SPEED, MAX_SPEED)
 
-        # Simple oscillation damping
+        # PID parameters - very conservative for stability
+        Kp = 2.0   # Much lower proportional gain
+        Kd = 25.0  # Very high derivative for strong damping
+        Ki = 0.005 # Minimal integral
+        
+        # PID state
         prev_error = 0.0
-        error_trend = 0.0
-        damping_active = False
+        integral = 0.0
+        integral_limit = 20.0
+        
+        # Oscillation detection
+        error_history = []
+        max_history = 6
 
         # Timeout guard proportional to requested rotation  
-        timeout_s = max(4.0, 0.1 * abs(deg) + 2.0)
+        timeout_s = max(8.0, 0.12 * abs(deg) + 3.0)  # Shorter timeout
         start = time.time()
 
         def clamp(v, lo, hi):
             return max(lo, min(hi, v))
+
+        def angle_diff(target, current):
+            """Calculate shortest angular difference between two angles in degrees."""
+            diff = target - current
+            # Wrap to [-180, 180]
+            while diff > 180:
+                diff -= 360
+            while diff <= -180:
+                diff += 360
+            return diff
 
         last_within = None
         loop_count = 0
@@ -180,93 +197,118 @@ class Robot:
                         print(f"Rotation timeout after {timeout_s:.1f}s")
                     break
 
-                heading = self.imu.get_orientation()  # radians, CCW positive
-                # Small unwrap: compute shortest signed difference
-                err = target_rad - heading
-                # Wrap to [-pi, pi]
-                err = (err + math.pi) % (2 * math.pi) - math.pi
+                current_heading = self.imu.get_heading()  # degrees
+                # Calculate shortest signed difference
+                err = angle_diff(target_heading, current_heading)
 
-                # Calculate error trend for damping
+                # Check for oscillation pattern
+                error_history.append(err)
+                if len(error_history) > max_history:
+                    error_history.pop(0)
+                
+                # Detect oscillation: sign changes in recent history
+                oscillating = False
+                if len(error_history) >= 4:
+                    sign_changes = 0
+                    for i in range(1, len(error_history)):
+                        if (error_history[i] > 0) != (error_history[i-1] > 0):
+                            sign_changes += 1
+                    oscillating = sign_changes >= 2  # 2+ sign changes = oscillating
+
+                # Calculate PID terms
                 if loop_count > 0:
-                    error_trend = (err - prev_error) / dt
+                    derivative = (err - prev_error) / dt
+                else:
+                    derivative = 0.0
+                
+                integral += err * dt
+                integral = max(-integral_limit, min(integral_limit, integral))  # Clamp integral
+                
+                # PID output in radians
+                pid_output = Kp * err + Ki * integral + Kd * derivative
                 prev_error = err
 
-                # Detect rapid oscillation
-                if abs(error_trend) > math.radians(30):  # More than 30°/s change rate
-                    damping_active = True
-                elif abs(err) > math.radians(5):  # Reset damping when far from target
-                    damping_active = False
-
                 # Apply deadband to prevent tiny corrections that cause hunting
-                effective_deadband = deadband_rad * (2.0 if damping_active else 1.0)
-                if abs(err) <= effective_deadband:
+                if abs(err) <= deadband_deg:
                     if debug and loop_count % 8 == 0:
-                        status = "damped" if damping_active else "normal"
-                        print(f"In deadband ({status}): err={math.degrees(err):.2f}°")
+                        print(f"In deadband: err={err:.2f}°")
                     time.sleep(dt)
                     loop_count += 1
                     continue
 
-                if abs(err) <= tol_rad:
+                if abs(err) <= tol_deg:
                     # Use simple tolerance-based stopping
                     if last_within is None:
                         last_within = time.time()
                         if debug:
-                            print(f"Entered tolerance: err={math.degrees(err):.2f}°")
+                            print(f"Entered tolerance: err={err:.2f}°")
                     elif time.time() - last_within >= hold_time:
                         if debug:
                             print(f"Hold complete after {time.time() - last_within:.3f}s, stopping")
                         break
                 else:
                     if last_within is not None and debug:
-                        print(f"Left tolerance band: err={math.degrees(err):.2f}°")
+                        print(f"Left tolerance band: err={err:.2f}°")
                     last_within = None
 
-                # Simplified speed control with heavy damping
-                err_deg = abs(math.degrees(err))
+                # Adaptive speed profile based on error and approach rate
+                err_deg = abs(err)
+                approaching = (err > 0 and derivative < 0) or (err < 0 and derivative > 0)
                 
-                if err_deg < 2.0:
-                    speed = TURN_MIN_SPEED
-                elif err_deg < 10.0:
-                    # Gentle linear ramp
-                    ratio = (err_deg - 2.0) / 8.0
-                    speed_range = max_turn_speed - TURN_MIN_SPEED
-                    speed = int(TURN_MIN_SPEED + ratio * speed_range * 0.6)
+                # Base speed from error magnitude
+                if err_deg < 1.0:
+                    base_speed = TURN_MIN_SPEED  # 90 PWM - minimum
+                elif err_deg < 3.0:
+                    base_speed = TURN_MIN_SPEED + 3  # 93 PWM - crawl
+                elif err_deg < 8.0:
+                    base_speed = TURN_MIN_SPEED + 6  # 96 PWM - slow
+                elif err_deg < 20.0:
+                    base_speed = TURN_MIN_SPEED + 9  # 99 PWM - moderate
                 else:
-                    # Cap at moderate speed
-                    speed = int(TURN_MIN_SPEED + (max_turn_speed - TURN_MIN_SPEED) * 0.8)
-
-                # Apply additional damping when oscillating
-                if damping_active:
-                    speed = max(TURN_MIN_SPEED, int(speed * 0.75))
-
+                    base_speed = TURN_MIN_SPEED + 12  # 102 PWM - max
+                
+                # Rate-based adjustment for smooth approach
+                rate_deg_s = abs(derivative) if derivative else 0
+                if approaching and rate_deg_s > 10:  # Fast approach - slow down
+                    speed = max(TURN_MIN_SPEED, base_speed - 5)
+                elif rate_deg_s > 20:  # Very fast rate - emergency slow
+                    speed = TURN_MIN_SPEED
+                else:
+                    speed = base_speed
+                
+                # Oscillation detection and mitigation
+                if oscillating:
+                    speed = TURN_MIN_SPEED  # Drop to absolute minimum
+                
                 speed = clamp(speed, TURN_MIN_SPEED, max_turn_speed)
 
                 # Debug every 8 loops
                 if debug and loop_count % 8 == 0:
                     elapsed = time.time() - start
-                    in_tol = "TOL" if abs(err) <= tol_rad else "TURN"
-                    damp_status = "DAMP" if damping_active else "----"
+                    in_tol = "TOL" if abs(err) <= tol_deg else "TURN"
                     hold_time_str = f"hold:{time.time() - last_within:.2f}s" if last_within else "---"
-                    print(f"{elapsed:.2f}s {in_tol} err:{math.degrees(err):+6.2f}° rate:{math.degrees(error_trend):+5.0f}°/s spd:{speed:3d} {damp_status} {hold_time_str}")
+                    deriv_rate = derivative if derivative else 0
+                    hz = loop_count / elapsed if elapsed > 0 else 0
+                    osc_status = "OSC" if oscillating else "---"
+                    print(f"{elapsed:.2f}s {in_tol} err:{err:+6.2f}° rate:{deriv_rate:+5.0f}°/s spd:{speed:3d} {osc_status} {hold_time_str} ({hz:.0f}Hz)")
 
                 # Determine directions for in-place rotation
                 if err > 0:  # need to rotate CCW (positive heading direction)
-                    # CCW: left wheel forward, right wheel backward (SWAPPED TO FIX DIRECTION)
-                    self.motors.set_motor(L_MTR, FWD, speed)
-                    self.motors.set_motor(R_MTR, RWD, speed)
-                else:       # need to rotate CW (negative heading direction)
-                    # CW: left wheel backward, right wheel forward (SWAPPED TO FIX DIRECTION)
+                    # CCW: left wheel backward, right wheel forward (FIXED DIRECTION)
                     self.motors.set_motor(L_MTR, RWD, speed)
                     self.motors.set_motor(R_MTR, FWD, speed)
+                else:       # need to rotate CW (negative heading direction)
+                    # CW: left wheel forward, right wheel backward (FIXED DIRECTION)
+                    self.motors.set_motor(L_MTR, FWD, speed)
+                    self.motors.set_motor(R_MTR, RWD, speed)
 
                 time.sleep(dt)
                 loop_count += 1
         finally:
             self.motors.stop_motors()
             if debug:
-                final_heading = self.imu.get_orientation()
-                final_err = math.degrees(target_rad - final_heading)
+                final_heading = self.imu.get_heading()
+                final_err = angle_diff(target_heading, final_heading)
                 print(f"Final error: {final_err:+.2f}°, loops: {loop_count}")
 
     def _take_snapshot(self):

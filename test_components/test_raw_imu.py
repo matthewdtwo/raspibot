@@ -22,11 +22,11 @@ def runExample():
 			 '{: 06d}'.format(IMU.axRaw)\
 			, '\t', '{: 06d}'.format(IMU.ayRaw)\
 			, '\t', '{: 06d}'.format(IMU.azRaw)\
-			, '\t', '{: 06d}'.format(IMU.gxRaw)\
-			, '\t', '{: 06d}'.format(IMU.gyRaw)\
+			# , '\t', '{: 06d}'.format(IMU.gxRaw)\
+			# , '\t', '{: 06d}'.format(IMU.gyRaw)\
 			, '\t', '{: 06d}'.format(IMU.gzRaw)\
-			, '\t', '{: 06d}'.format(IMU.mxRaw)\
-			, '\t', '{: 06d}'.format(IMU.myRaw)\
+			# , '\t', '{: 06d}'.format(IMU.mxRaw)\
+			# , '\t', '{: 06d}'.format(IMU.myRaw)\
 			, '\t', '{: 06d}'.format(IMU.mzRaw)\
 			)
 			time.sleep(0.03)

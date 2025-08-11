@@ -1,354 +1,179 @@
-import time
-import sys
-import math
+#!/usr/bin/env python3
+# imu.py
+import time, math, json, os
+import qwiic_icm20948
 
-try:
-    import qwiic_icm20948
-except Exception:  # Allow import to fail gracefully on non-target hosts
-    qwiic_icm20948 = None
+CAL_FILE = "imu_cal.json"
 
-from config import (
-    DECLINATION_DEG,
-    MAG_OFFSET_X,
-    MAG_OFFSET_Y,
-    MAG_OFFSET_Z,
-    MAG_SIGN_X,
-    MAG_SIGN_Y,
-    MAG_SIGN_Z,
-)
+R = [
+    [-1.0, 0.0, 0.0],  # accel/gyro rotation matrix (sensor->robot frame)
+    [ 0.0, 1.0, 0.0],
+    [ 0.0, 0.0, 1.0],
+]
 
+RMZ = 270  # mag-only rotation about Z (deg)
 
-def _wrap_pi(angle_rad: float) -> float:
-    return (angle_rad + math.pi) % (2 * math.pi) - math.pi
+def rotz(deg):
+    r = math.radians(deg); c, s = math.cos(r), math.sin(r)
+    return [[c,-s,0],[s,c,0],[0,0,1]]
 
+def matvec(M, v):
+    return [M[0][0]*v[0] + M[0][1]*v[1] + M[0][2]*v[2],
+            M[1][0]*v[0] + M[1][1]*v[1] + M[1][2]*v[2],
+            M[2][0]*v[0] + M[2][1]*v[1] + M[2][2]*v[2]]
+
+def norm(v): return math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2])
+def wrap_pi(a):
+    while a <= -math.pi: a += 2*math.pi
+    while a >   math.pi: a -= 2*math.pi
+    return a
 
 class IMU:
-    def __init__(self, baseline_samples: int = 20, declination_deg: float = DECLINATION_DEG):
-        self._connected = False
-        self._declination = math.radians(declination_deg)
-        self._zero_heading = 0.0
-        self._imu = None
-        # Enhanced smoothing for heading readings
-        self._heading_history = []
-        self._max_history = 8  # Increased from 5 for better smoothing
-        # Error detection and recovery
-        self._consecutive_errors = 0
-        self._max_consecutive_errors = 5
-        self._last_valid_heading = 0.0
-        # Data validation
-        self._mag_magnitude_range = (10.0, 1000.0)  # Valid magnetometer magnitude range
-        self._accel_magnitude_range = (0.5, 2.0)    # Valid accelerometer magnitude range (in g's)
+    def __init__(self, alpha=0.2):
+        self.alpha = alpha
+        self.imu = qwiic_icm20948.QwiicIcm20948()
+        if not self.imu.connected:
+            raise RuntimeError("ICM-20948 not detected. Check wiring.")
+        self.imu.begin()
+        self.Rm = rotz(RMZ)
+        self.cal = self._load_cal() or self._calibrate()
+        self.g_bias = self.cal["gyro_bias"]
+        self.mmin, self.mmax = self.cal["mag_min"], self.cal["mag_max"]
+        self.yaw = 0.0
+        self.yaw_mag_f = None
+        self.last_t = time.time()
+        # gating refs
+        self.B_ref = None
+        self.M_ref = None
+        # stationary bias estimator
+        self.stat_window = []
+        self.bias_learn_rate = 0.001  # slow creep
 
-        try:
-            if qwiic_icm20948 is None:
-                return
-            imu = qwiic_icm20948.QwiicIcm20948()
-            if not getattr(imu, "connected", False):
-                return
-            imu.begin()
-            time.sleep(0.25)
-            
-            # Configure IMU for better stability
-            self._configure_imu(imu)
-            
-            self._imu = imu
-            self._connected = True
-        except Exception:
-            self._connected = False
-            self._imu = None
-            return
+    def _load_cal(self):
+        if os.path.exists(CAL_FILE):
+            with open(CAL_FILE,"r") as f:
+                return json.load(f)
+        return None
 
-        # Establish baseline heading with validation
-        try:
-            self._zero_heading = self._average_heading(baseline_samples)
-        except Exception:
-            self._zero_heading = 0.0
+    def _save_cal(self, cal):
+        with open(CAL_FILE,"w") as f:
+            json.dump(cal,f,indent=2)
 
-    def get_orientation(self, smooth: bool = True) -> float:
-        """Return current heading relative to startup heading, in radians [-pi, pi]."""
-        if not self._connected:
-            return 0.0
-        
-        try:
-            current = self._compute_heading()
-            if current is None:  # Invalid reading
-                if self._consecutive_errors < self._max_consecutive_errors:
-                    return self._last_valid_heading  # Return last known good value
-                else:
-                    return 0.0  # Too many errors, return safe default
-            
-            # Reset error counter on successful reading
-            self._consecutive_errors = 0
-            rel = _wrap_pi(current - self._zero_heading)
-            self._last_valid_heading = rel
-            
-        except Exception:
-            self._consecutive_errors += 1
-            if self._consecutive_errors < self._max_consecutive_errors:
-                return self._last_valid_heading
-            else:
-                return 0.0
-        
-        if smooth and rel is not None:
-            # Enhanced smoothing with outlier rejection
-            rel = self._apply_smoothing(rel)
-        
-        return rel
+    def _calibrate(self, mag_s=15.0, gyro_rest_s=3.0):
+        print("Calibration starting.")
+        print("1) Keep still for gyro bias...")
+        gsum=[0.0,0.0,0.0]; n=0
+        t0=time.time()
+        while time.time()-t0<gyro_rest_s:
+            self.imu.getAgmt()
+            gsum[0]+=math.radians(self.imu.gxRaw)
+            gsum[1]+=math.radians(self.imu.gyRaw)
+            gsum[2]+=math.radians(self.imu.gzRaw)
+            n+=1; time.sleep(0.01)
+        g_bias = matvec(R,[gsum[i]/max(n,1) for i in range(3)])
 
-    def calibrate_zero(self, samples: int = 20) -> None:
-        if not self._connected:
-            self._zero_heading = 0.0
-            return
-        # Clear history when recalibrating
-        self._heading_history.clear()
-        self._consecutive_errors = 0  # Reset error counter
-        try:
-            self._zero_heading = self._average_heading(samples)
-        except Exception:
-            self._zero_heading = 0.0  # Fallback to safe default
+        print("2) Mag min/max (~{}s). Rotate slowly...".format(int(mag_s)))
+        mmin=[1e9]*3; mmax=[-1e9]*3; t0=time.time()
+        while time.time()-t0<mag_s:
+            self.imu.getAgmt()
+            m = matvec(self.Rm, matvec(R, [self.imu.mxRaw,self.imu.myRaw,self.imu.mzRaw]))
+            for i in range(3):
+                mmin[i]=min(mmin[i], m[i]); mmax[i]=max(mmax[i], m[i])
+            time.sleep(0.01)
 
-    def get_imu_health(self) -> dict:
-        """Return IMU health status and diagnostics."""
-        if not self._connected:
-            return {"connected": False, "status": "disconnected"}
-            
-        try:
-            axes_data = self._read_axes()
-            if axes_data is None:
-                return {
-                    "connected": True,
-                    "status": "error",
-                    "consecutive_errors": self._consecutive_errors,
-                    "data_valid": False
-                }
-                
-            ax, ay, az, mx, my, mz = axes_data
-            accel_mag = math.sqrt(ax*ax + ay*ay + az*az) / 16384.0  # Convert to g's
-            mag_mag = math.sqrt(mx*mx + my*my + mz*mz)
-            
-            return {
-                "connected": True,
-                "status": "healthy" if self._consecutive_errors == 0 else "degraded",
-                "consecutive_errors": self._consecutive_errors,
-                "data_valid": True,
-                "accel_magnitude_g": round(accel_mag, 3),
-                "mag_magnitude": round(mag_mag, 1),
-                "history_length": len(self._heading_history),
-                "last_valid_heading_deg": round(math.degrees(self._last_valid_heading), 1)
-            }
-        except Exception as e:
-            return {
-                "connected": True,
-                "status": "error",
-                "error": str(e),
-                "consecutive_errors": self._consecutive_errors
-            }
+        print("3) Quick accel sample...")
+        asum=0.0; n=0; t0=time.time()
+        while time.time()-t0<1.0:
+            self.imu.getAgmt()
+            a = matvec(R,[self.imu.axRaw,self.imu.ayRaw,self.imu.azRaw])
+            asum+=norm(a); n+=1; time.sleep(0.01)
+        g_norm = asum/max(n,1)
 
-    # ---------------- Internals ----------------
-    def _configure_imu(self, imu) -> None:
-        """Configure IMU for optimal performance and stability."""
-        try:
-            # Set magnetometer to higher resolution mode if available
-            if hasattr(imu, 'setMagFS'):
-                imu.setMagFS(0)  # ±4900 μT range for better resolution
-            
-            # Set accelerometer range for better resolution
-            if hasattr(imu, 'setAccelFS'):
-                imu.setAccelFS(0)  # ±2g range for better resolution
-                
-            # Enable data ready interrupt if available
-            if hasattr(imu, 'enableDataReadyInterrupt'):
-                imu.enableDataReadyInterrupt()
-                
-        except Exception:
-            pass  # Gracefully handle unsupported features
+        cal={"gyro_bias":g_bias,"mag_min":mmin,"mag_max":mmax,"g_norm":g_norm,"rm_z":RMZ}
+        self._save_cal(cal)
+        print("Calibration done.")
+        return cal
 
-    def _apply_smoothing(self, new_heading: float) -> float:
-        """Apply enhanced smoothing with outlier rejection."""
-        # Check for outliers before adding to history
-        if len(self._heading_history) >= 2:
-            # Calculate angular difference from recent history
-            recent_avg = self._circular_mean(self._heading_history[-2:])
-            angular_diff = abs(_wrap_pi(new_heading - recent_avg))
-            
-            # Reject obvious outliers (>45° sudden change)
-            if angular_diff > math.radians(45):
-                return self._last_valid_heading if self._last_valid_heading else 0.0
-        
-        # Add to history
-        self._heading_history.append(new_heading)
-        if len(self._heading_history) > self._max_history:
-            self._heading_history.pop(0)
-        
-        # Apply circular averaging
-        if len(self._heading_history) >= 3:
-            return self._circular_mean(self._heading_history)
+    def _apply_mag_cal(self, m):
+        mmin, mmax = self.mmin, self.mmax
+        c=[(mmax[i]+mmin[i])*0.5 for i in range(3)]
+        r=[(mmax[i]-mmin[i])*0.5 for i in range(3)]
+        r=[ri if abs(ri)>1e-9 else 1.0 for ri in r]
+        return [(m[i]-c[i])/r[i] for i in range(3)]
+
+    def _accel_to_pr(self, a):
+        ax,ay,az=a; n=max(norm(a),1e-9); ax/=n; ay/=n; az/=n
+        phi   = math.atan2(ay, az)
+        theta = math.atan2(-ax, math.sqrt(ay*ay+az*az))
+        return phi, theta
+
+    def _tilt_comp_heading(self, m, phi, theta):
+        mx,my,mz=m
+        cth,sth=math.cos(theta),math.sin(theta)
+        cph,sph=math.cos(phi),math.sin(phi)
+        mx2 = mx*cth + mz*sth
+        my2 = mx*sph*sth + my*cph - mz*sph*cth
+        return wrap_pi(math.atan2(-my2, mx2))
+
+    def get_heading(self):
+        """Returns fused yaw heading in degrees."""
+        t = time.time(); dt = t - self.last_t
+        if dt <= 0: dt = 1e-3
+        self.last_t = t
+
+        self.imu.getAgmt()
+
+        # Sensor->robot
+        ax,ay,az = matvec(R, [self.imu.axRaw,self.imu.ayRaw,self.imu.azRaw])
+        gx,gy,gz = matvec(R, [math.radians(self.imu.gxRaw),
+                              math.radians(self.imu.gyRaw),
+                              math.radians(self.imu.gzRaw)])
+        mx,my,mz = matvec(self.Rm, matvec(R, [self.imu.mxRaw,self.imu.myRaw,self.imu.mzRaw]))
+
+        # Apply gyro bias
+        gz -= self.g_bias[2]
+
+        # Pitch/roll
+        phi,theta = self._accel_to_pr([ax,ay,az])
+
+        # Mag tilt comp + cal
+        m_cal = self._apply_mag_cal([mx,my,mz])
+        yaw_mag = self._tilt_comp_heading(m_cal, phi, theta)
+
+        # Smooth mag yaw
+        if self.yaw_mag_f is None:
+            self.yaw_mag_f = yaw_mag
         else:
-            return new_heading
+            e = wrap_pi(yaw_mag - self.yaw_mag_f)
+            self.yaw_mag_f = wrap_pi(self.yaw_mag_f + 0.2*e)
 
-    def _circular_mean(self, angles: list) -> float:
-        """Compute circular mean of angles in radians."""
-        if not angles:
-            return 0.0
-        s_x = sum(math.cos(h) for h in angles)
-        s_y = sum(math.sin(h) for h in angles)
-        return math.atan2(s_y, s_x)
+        # Gating
+        B = norm([mx,my,mz])
+        if self.B_ref is None:
+            self.B_ref = B
+        else:
+            self.B_ref = 0.98*self.B_ref + 0.02*B
 
-    def _validate_sensor_data(self, ax: float, ay: float, az: float, 
-                            mx: float, my: float, mz: float) -> bool:
-        """Validate sensor readings for sanity."""
-        # Check accelerometer magnitude (should be ~1g when stationary)
-        accel_mag = math.sqrt(ax*ax + ay*ay + az*az)
-        accel_g = accel_mag / 16384.0  # Convert to g's (assuming ±2g scale)
-        
-        if not (self._accel_magnitude_range[0] <= accel_g <= self._accel_magnitude_range[1]):
-            return False
-        
-        # Check magnetometer magnitude
-        mag_mag = math.sqrt(mx*mx + my*my + mz*mz)
-        if not (self._mag_magnitude_range[0] <= mag_mag <= self._mag_magnitude_range[1]):
-            return False
-            
-        # Check for NaN or infinite values
-        values = [ax, ay, az, mx, my, mz]
-        if any(not math.isfinite(v) for v in values):
-            return False
-            
-        return True
-    def _update(self) -> None:
-        """Update sensor readings with retry logic."""
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                if hasattr(self._imu, "dataReady") and self._imu.dataReady():
-                    self._imu.getAgmt()
-                    return
-                elif hasattr(self._imu, "getAgmt"):
-                    self._imu.getAgmt()
-                    return
-            except Exception:
-                if attempt < max_retries - 1:
-                    time.sleep(0.001)  # Brief pause before retry
-                    continue
-                else:
-                    raise  # Re-raise on final attempt
+        if self.M_ref is None:
+            u = m_cal[:]; n = max(norm(u),1e-9); self.M_ref = [u[0]/n,u[1]/n,u[2]/n]
+        u = m_cal[:]; n = max(norm(u),1e-9); u = [u[0]/n,u[1]/n,u[2]/n]
+        dotp = max(-1.0,min(1.0,u[0]*self.M_ref[0]+u[1]*self.M_ref[1]+u[2]*self.M_ref[2]))
+        ang = math.acos(dotp)
 
-    def _read_axes(self):
-        """Read and validate sensor axes with error handling."""
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                self._update()
+        t_mag = 1.0 if abs(B - self.B_ref)/max(self.B_ref,1e-6) < 0.25 else 0.0
+        t_dir = 1.0 if ang < math.radians(25) else 0.0
+        trust = t_mag * t_dir
+        alpha_eff = self.alpha * trust
 
-                def _gx(primary: str, fallback: str):
-                    return getattr(self._imu, primary, getattr(self._imu, fallback, 0.0))
+        # Fuse
+        yaw_gyro = wrap_pi(self.yaw + gz*dt)
+        err = wrap_pi(self.yaw_mag_f - yaw_gyro)
+        self.yaw = wrap_pi(yaw_gyro + alpha_eff*err)
 
-                ax = _gx("aX", "axRaw")
-                ay = _gx("aY", "ayRaw")
-                az = _gx("aZ", "azRaw")
-                mx = _gx("mX", "mxRaw")
-                my = _gx("mY", "myRaw")
-                mz = _gx("mZ", "mzRaw")
-                
-                # Apply hard-iron offsets and axis signs
-                mx = (mx - MAG_OFFSET_X) * MAG_SIGN_X
-                my = (my - MAG_OFFSET_Y) * MAG_SIGN_Y
-                mz = (mz - MAG_OFFSET_Z) * MAG_SIGN_Z
-                
-                # Validate the readings
-                if self._validate_sensor_data(ax, ay, az, mx, my, mz):
-                    return ax, ay, az, mx, my, mz
-                else:
-                    if attempt < max_attempts - 1:
-                        time.sleep(0.005)  # Brief pause before retry
-                        continue
-                    else:
-                        return None  # Return None for invalid data
-                        
-            except Exception:
-                if attempt < max_attempts - 1:
-                    time.sleep(0.005)
-                    continue
-                else:
-                    return None
+        # --- Stationary bias estimator ---
+        stat_thresh = math.radians(2.0)   # deg/s
+        acc_dev = max(abs(ax),abs(ay))    # crude motion check
+        if abs(gz) < stat_thresh and acc_dev < 0.05:
+            self.g_bias[2] = 0.999*self.g_bias[2] + 0.001*(self.g_bias[2] + gz)
 
-    def _compute_heading(self) -> float:
-        """Compute heading with enhanced error handling."""
-        axes_data = self._read_axes()
-        if axes_data is None:
-            return None  # Signal invalid reading
-            
-        ax, ay, az, mx, my, mz = axes_data
-
-        # Compute roll and pitch from accelerometer with bounds checking
-        try:
-            # Normalize accelerometer data
-            accel_norm = math.sqrt(ax*ax + ay*ay + az*az)
-            if accel_norm < 1e-6:  # Avoid division by zero
-                return None
-                
-            ax_norm = ax / accel_norm
-            ay_norm = ay / accel_norm  
-            az_norm = az / accel_norm
-            
-            # Clamp values to valid range for atan2
-            ay_norm = max(-1.0, min(1.0, ay_norm))
-            ax_norm = max(-1.0, min(1.0, ax_norm))
-            
-            roll = math.atan2(ay_norm, az_norm)
-            pitch = math.atan2(-ax_norm, math.sqrt(ay_norm * ay_norm + az_norm * az_norm))
-            
-        except Exception:
-            return None
-
-        # Tilt compensation for magnetometer with bounds checking
-        try:
-            cos_pitch = math.cos(pitch)
-            sin_pitch = math.sin(pitch)
-            cos_roll = math.cos(roll)
-            sin_roll = math.sin(roll)
-            
-            Xh = mx * cos_pitch + mz * sin_pitch
-            Yh = mx * sin_roll * sin_pitch + my * cos_roll - mz * sin_roll * cos_pitch
-
-            # Check for valid magnetometer components
-            if abs(Xh) < 1e-6 and abs(Yh) < 1e-6:
-                return None  # No valid magnetic field
-                
-            # Use atan2(-Yh, Xh) to align with common NED/board orientation so CCW is positive
-            heading = math.atan2(-Yh, Xh) + self._declination
-            heading = _wrap_pi(heading)
-            return heading
-            
-        except Exception:
-            return None
-
-    def _average_heading(self, samples: int) -> float:
-        """Compute average heading with enhanced error handling."""
-        s_x = 0.0
-        s_y = 0.0
-        valid_samples = 0
-        n = max(1, int(samples))
-        
-        for i in range(n):
-            try:
-                h = self._compute_heading()
-                if h is not None:  # Only include valid readings
-                    s_x += math.cos(h)
-                    s_y += math.sin(h)
-                    valid_samples += 1
-                time.sleep(0.02)
-            except Exception:
-                continue  # Skip invalid readings
-                
-        if valid_samples < n // 2:  # Need at least half valid samples
-            raise Exception(f"Insufficient valid samples: {valid_samples}/{n}")
-            
-        return math.atan2(s_y, s_x)
-
-
-if __name__ == "__main__":
-    imu = IMU()
-    print(math.degrees(imu.get_orientation()))
-    time.sleep(5)
-    print(math.degrees(imu.get_orientation()))
+        return math.degrees(self.yaw)
