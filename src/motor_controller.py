@@ -36,5 +36,5 @@ if __name__ == "__main__":
     # set both motors to forward for 5 seconds
     motor_controller.set_motor(L_MTR, FWD, 100)
     motor_controller.set_motor(R_MTR, FWD, 100)
-    time.sleep(5)
+    time.sleep(2)
     motor_controller.stop_motors()

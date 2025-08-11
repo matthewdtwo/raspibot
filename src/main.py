@@ -18,8 +18,8 @@ if __name__ == "__main__":
         llm = LLMs(tools=robot_tools, camera=camera, debug=True)
 
         response = llm.agent.invoke(
-            {"messages": [{"role": "user", "content": "Explore the environment."}] },
-            {"recursion_limit":  15}
+            {"messages": [{"role": "user", "content": "Thoroughly explore and map the entire room. Take snapshots from multiple angles, rotate to see all sides, move around to different positions, and compile a detailed report of everything you observe. Continue exploring until you have a complete understanding of the space."}] },
+            {"recursion_limit":  100}
         )
 
         print(response)
