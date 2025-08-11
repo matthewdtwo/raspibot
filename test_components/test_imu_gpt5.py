@@ -114,8 +114,8 @@ def main():
     # Trust tracking
     B_ref=None; M_ref=None
     B_alpha=0.02
-    B_tol=0.25                   # 25% magnitude window
-    ang_tol=math.radians(25)     # 25° direction window
+    B_tol  = 0.05                 # was 0.25
+    ang_tol = math.radians(3)     # was 25
 
     yaw=0.0; yaw_mag_f=None
     last=time.time(); last_out=last
