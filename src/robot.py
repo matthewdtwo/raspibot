@@ -1,7 +1,9 @@
 import time
 import math
+import signal
+import atexit
 
-from llm import LLM
+from llm import LLMs
 from motor_controller import MotorController
 from encoders import Encoders
 from imu import IMU
@@ -29,10 +31,35 @@ class Robot:
         self.motors = MotorController()
         self.encoders = Encoders()
         self.imu = IMU()
-        self.camera = Camera()
-        self.llm = LLM()
+        
+        # Register cleanup handlers for safe shutdown
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        atexit.register(self.cleanup)
 
-    def _move_forward(self, mm: int):
+    def _signal_handler(self, signum, frame):
+        """Handle interrupt signals by stopping motors and exiting"""
+        print(f"\nReceived signal {signum}, stopping motors...")
+        self.cleanup()
+        exit(0)
+
+    def cleanup(self):
+        """Safely stop all motors"""
+        try:
+            self.motors.stop_motors()
+            print("Motors stopped safely")
+        except Exception as e:
+            print(f"Error stopping motors: {e}")
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cleanup"""
+        self.cleanup()
+
+    def move_forward(self, mm: int, debug: bool = False):
         """Drive forward a distance in millimeters using a simple PID on encoder counts.
 
         Controls overall progress using average mm while keeping wheels aligned.
@@ -44,6 +71,12 @@ class Robot:
         pulses_per_mm_R = PULSES_PER_ROTATION_RIGHT / wheel_circumference_mm
         target_pulses_L = int(mm * pulses_per_mm_L)
         target_pulses_R = int(mm * pulses_per_mm_R)
+
+        if debug:
+            print(f"Move forward {mm}mm:")
+            print(f"  Wheel circumference: {wheel_circumference_mm:.1f}mm")
+            print(f"  Pulses/mm - Left: {pulses_per_mm_L:.2f}, Right: {pulses_per_mm_R:.2f}")
+            print(f"  Target pulses - Left: {target_pulses_L}, Right: {target_pulses_R}")
 
         # PID gains (tune on hardware)
         Kp = 0.25
@@ -73,8 +106,12 @@ class Robot:
             return max(lo, min(hi, val))
 
         try:
+            loop_count = 0
             while True:
+                loop_count += 1
                 if time.time() - start_time > timeout_s:
+                    if debug:
+                        print("  Timeout reached!")
                     break
 
                 # Read encoders and normalize sign so forward is positive
@@ -90,8 +127,19 @@ class Robot:
                 avg_mm_done = 0.5 * (left_count / pulses_per_mm_L + right_count / pulses_per_mm_R)
                 error_mm = mm - avg_mm_done
 
+                if debug and loop_count % 10 == 0:  # Print every 0.5s (every 10th loop)
+                    print(f"  Progress: {avg_mm_done:.1f}mm/{mm}mm, Left: {left_count}, Right: {right_count}, Error: {error_mm:.1f}mm")
+
                 # Completion when both wheels within their tolerances
                 if abs(err_L_pulses) <= tolerance_pulses_L and abs(err_R_pulses) <= tolerance_pulses_R:
+                    if debug:
+                        print(f"  Target reached! Final position: {avg_mm_done:.1f}mm")
+                    break
+
+                # Early exit if we've overshot significantly
+                if avg_mm_done > mm + 20:  # 20mm overshoot tolerance
+                    if debug:
+                        print(f"  Stopping due to overshoot: {avg_mm_done:.1f}mm > {mm + 20}mm")
                     break
 
                 # PID core
@@ -101,9 +149,14 @@ class Robot:
                 prev_error_mm = error_mm
                 pid_output = Kp * error_mm + Ki * integral + Kd * derivative
 
-                # Base speed (forward only)
+                # Base speed (forward only) - reduce as we approach target
                 speed_cmd = int(abs(pid_output))
-                if speed_cmd < MIN_SPEED:
+                
+                # Slow down when close to target
+                if error_mm < 20:  # Within 20mm of target
+                    speed_cmd = int(speed_cmd * max(0.3, error_mm / 20.0))
+                
+                if speed_cmd < MIN_SPEED and error_mm > 5:  # Only apply minimum if we're still far from target
                     speed_cmd = MIN_SPEED
                 speed_cmd = clamp(speed_cmd, 0, MAX_SPEED)
 
@@ -116,204 +169,281 @@ class Robot:
                 left_speed = clamp(speed_cmd - steer, 0, MAX_SPEED)
                 right_speed = clamp(speed_cmd + steer, 0, MAX_SPEED)
 
+                # Stop motors if we're very close to target to prevent overshoot
+                if error_mm < 2:
+                    left_speed = right_speed = 0
+
                 self.motors.set_motor(L_MTR, FWD, int(left_speed))
                 self.motors.set_motor(R_MTR, FWD, int(right_speed))
 
                 time.sleep(dt)
         finally:
             self.motors.stop_motors()
+            
+            # Final debug output
+            if debug:
+                raw_left_final, raw_right_final = self.encoders.get_counts()
+                left_final = ENCODER_LEFT_SIGN * raw_left_final
+                right_final = ENCODER_RIGHT_SIGN * raw_right_final
+                final_mm = 0.5 * (left_final / pulses_per_mm_L + right_final / pulses_per_mm_R)
+                print(f"  Final: {final_mm:.1f}mm (requested {mm}mm, error: {final_mm-mm:+.1f}mm)")
+                print(f"  Final pulses - Left: {left_final}, Right: {right_final}")
+                
+                # Calculate actual pulses per mm based on this run
+                if final_mm > 0:
+                    actual_ppm_L = left_final / final_mm
+                    actual_ppm_R = right_final / final_mm
+                    print(f"  Measured pulses/mm - Left: {actual_ppm_L:.2f}, Right: {actual_ppm_R:.2f}")
+                    
+                    # Suggested corrections
+                    suggested_ppr_L = int(actual_ppm_L * wheel_circumference_mm)
+                    suggested_ppr_R = int(actual_ppm_R * wheel_circumference_mm)
+                    print(f"  Suggested PPR - Left: {suggested_ppr_L}, Right: {suggested_ppr_R}")
 
 
 
-    def _move_backward(self, mm: int):
-        pass
+    def move_backward(self, mm: int, debug: bool = False):
+        """Drive backward a distance in millimeters using a simple PID on encoder counts.
 
-    def _rotate_cw(self, deg: int, debug: bool = False):
-        # Clockwise is negative heading (with our IMU: CCW positive)
+        Controls overall progress using average mm while keeping wheels aligned.
+        Uses per-wheel encoder calibration and normalized signs.
+        """
+        # Conversion from mm to encoder pulses for each wheel
+        wheel_circumference_mm = math.pi * WHEEL_DIAMETER
+        pulses_per_mm_L = PULSES_PER_ROTATION_LEFT / wheel_circumference_mm
+        pulses_per_mm_R = PULSES_PER_ROTATION_RIGHT / wheel_circumference_mm
+        target_pulses_L = -int(mm * pulses_per_mm_L)  # Negative for backward
+        target_pulses_R = -int(mm * pulses_per_mm_R)  # Negative for backward
+
+        if debug:
+            print(f"Move backward {mm}mm:")
+            print(f"  Wheel circumference: {wheel_circumference_mm:.1f}mm")
+            print(f"  Pulses/mm - Left: {pulses_per_mm_L:.2f}, Right: {pulses_per_mm_R:.2f}")
+            print(f"  Target pulses - Left: {target_pulses_L}, Right: {target_pulses_R}")
+
+        # PID gains (tune on hardware)
+        Kp = 0.25
+        Ki = 0.0
+        Kd = 0.02
+
+        # Steering gain
+        K_steer = 0.035
+        # Loop/tolerance
+        dt = 0.05
+        tolerance_mm = 3.0
+        tolerance_pulses_L = max(2, int(tolerance_mm * pulses_per_mm_L))
+        tolerance_pulses_R = max(2, int(tolerance_mm * pulses_per_mm_R))
+        integral = 0.0
+        prev_error_mm = mm
+        integral_limit = 4 * MAX_SPEED
+
+        # Timeout based on distance
+        est_mm_per_s = 80.0
+        timeout_s = max(2.0, mm / est_mm_per_s + 1.0)
+        start_time = time.time()
+
+        # Reset encoders
+        self.encoders.reset_counts()
+
+        def clamp(val, lo, hi):
+            return max(lo, min(hi, val))
+
+        try:
+            loop_count = 0
+            while True:
+                loop_count += 1
+                if time.time() - start_time > timeout_s:
+                    if debug:
+                        print("  Timeout reached!")
+                    break
+
+                # Read encoders and normalize sign so forward is positive, backward is negative
+                raw_left_count, raw_right_count = self.encoders.get_counts()
+                left_count = ENCODER_LEFT_SIGN * raw_left_count
+                right_count = ENCODER_RIGHT_SIGN * raw_right_count
+
+                # Per-wheel pulse errors (target is negative, current should be negative)
+                err_L_pulses = target_pulses_L - left_count
+                err_R_pulses = target_pulses_R - right_count
+
+                # Overall error in mm (average of both wheels, use absolute value since we're going backward)
+                avg_mm_done = 0.5 * (abs(left_count) / pulses_per_mm_L + abs(right_count) / pulses_per_mm_R)
+                error_mm = mm - avg_mm_done
+
+                if debug and loop_count % 10 == 0:  # Print every 0.5s (every 10th loop)
+                    print(f"  Progress: {avg_mm_done:.1f}mm/{mm}mm, Left: {left_count}, Right: {right_count}, Error: {error_mm:.1f}mm")
+
+                # Completion when both wheels within their tolerances
+                if abs(err_L_pulses) <= tolerance_pulses_L and abs(err_R_pulses) <= tolerance_pulses_R:
+                    if debug:
+                        print(f"  Target reached! Final position: {avg_mm_done:.1f}mm")
+                    break
+
+                # Early exit if we've overshot significantly
+                if avg_mm_done > mm + 20:  # 20mm overshoot tolerance
+                    if debug:
+                        print(f"  Stopping due to overshoot: {avg_mm_done:.1f}mm > {mm + 20}mm")
+                    break
+
+                # PID core
+                integral += error_mm * dt
+                integral = clamp(integral, -integral_limit, integral_limit)
+                derivative = (error_mm - prev_error_mm) / dt
+                prev_error_mm = error_mm
+                pid_output = Kp * error_mm + Ki * integral + Kd * derivative
+
+                # Base speed (backward only) - reduce as we approach target
+                speed_cmd = int(abs(pid_output))
+                
+                # Slow down when close to target
+                if error_mm < 20:  # Within 20mm of target
+                    speed_cmd = int(speed_cmd * max(0.3, error_mm / 20.0))
+                
+                if speed_cmd < MIN_SPEED and error_mm > 5:  # Only apply minimum if we're still far from target
+                    speed_cmd = MIN_SPEED
+                speed_cmd = clamp(speed_cmd, 0, MAX_SPEED)
+
+                # Steering correction in mm space (use absolute values since we're going backward)
+                left_mm = abs(left_count) / pulses_per_mm_L
+                right_mm = abs(right_count) / pulses_per_mm_R
+                diff_mm = left_mm - right_mm  # Positive if left wheel has moved more
+                steer = int(K_steer * diff_mm)
+
+                left_speed = clamp(speed_cmd - steer, 0, MAX_SPEED)
+                right_speed = clamp(speed_cmd + steer, 0, MAX_SPEED)
+
+                # Stop motors if we're very close to target to prevent overshoot
+                if error_mm < 2:
+                    left_speed = right_speed = 0
+
+                # Use RWD (reverse) direction for both motors
+                self.motors.set_motor(L_MTR, RWD, int(left_speed))
+                self.motors.set_motor(R_MTR, RWD, int(right_speed))
+
+                time.sleep(dt)
+        finally:
+            self.motors.stop_motors()
+            
+            # Final debug output
+            if debug:
+                raw_left_final, raw_right_final = self.encoders.get_counts()
+                left_final = ENCODER_LEFT_SIGN * raw_left_final
+                right_final = ENCODER_RIGHT_SIGN * raw_right_final
+                final_mm = 0.5 * (abs(left_final) / pulses_per_mm_L + abs(right_final) / pulses_per_mm_R)
+                print(f"  Final: {final_mm:.1f}mm (requested {mm}mm, error: {final_mm-mm:+.1f}mm)")
+                print(f"  Final pulses - Left: {left_final}, Right: {right_final}")
+                
+                # Calculate actual pulses per mm based on this run
+                if final_mm > 0:
+                    actual_ppm_L = abs(left_final) / final_mm
+                    actual_ppm_R = abs(right_final) / final_mm
+                    print(f"  Measured pulses/mm - Left: {actual_ppm_L:.2f}, Right: {actual_ppm_R:.2f}")
+                    
+                    # Suggested corrections
+                    suggested_ppr_L = int(actual_ppm_L * wheel_circumference_mm)
+                    suggested_ppr_R = int(actual_ppm_R * wheel_circumference_mm)
+                    print(f"  Suggested PPR - Left: {suggested_ppr_L}, Right: {suggested_ppr_R}")
+
+    def rotate_cw(self, deg: int, debug: bool = False):
+        """Rotate clockwise by specified degrees.
+
+        Args:
+            deg: Degrees to rotate clockwise (positive value)
+            debug: Print debug information if True
+        """
         self._rotate_by_deg(-abs(deg), debug=debug)
 
-    def _rotate_ccw(self, deg: int, debug: bool = False):
+    def rotate_ccw(self, deg: int, debug: bool = False):
+        """Rotate counter-clockwise by specified degrees.
+        
+        Args:
+            deg: Degrees to rotate counter-clockwise (positive value)
+            debug: Print debug information if True
+        """
+        if debug:
+            print(f"Starting CCW rotation of {deg}°")
         # Counter-clockwise is positive heading
         self._rotate_by_deg(abs(deg), debug=debug)
 
     def _rotate_by_deg(self, deg: float, debug: bool = False):
-        """Rotate in place by a signed angle in degrees using IMU feedback.
-
-        Positive deg => CCW, Negative => CW.
+        """Rotate the robot by a specified number of degrees using IMU feedback.
+        
+        Args:
+            deg: Degrees to rotate (positive=CCW, negative=CW)
+            debug: Print debug information if True
         """
-        # Get current heading as our starting point for relative rotation
-        try:
-            start_heading = self.imu.get_heading()
-        except Exception:
-            # If IMU not available, do nothing
-            return
-
-        target_heading = start_heading + deg
-
-        # Control parameters - balanced for accuracy
-        dt = 0.05  # Moderate updates
-        tol_deg = 1.5  # Tighter tolerance for better accuracy
-        deadband_deg = 0.5  # Smaller deadband for less oscillation
-        hold_time = 0.8  # Longer hold time for stability
-        max_turn_speed = min(TURN_MAX_SPEED, MAX_SPEED)
-
-        # PID parameters - very conservative for stability
-        Kp = 2.0   # Much lower proportional gain
-        Kd = 25.0  # Very high derivative for strong damping
-        Ki = 0.005 # Minimal integral
+        def normalize_angle(angle):
+            """Normalize angle to [-180, 180] range"""
+            while angle > 180:
+                angle -= 360
+            while angle <= -180:
+                angle += 360
+            return angle
         
-        # PID state
-        prev_error = 0.0
-        integral = 0.0
-        integral_limit = 20.0
-        
-        # Oscillation detection
-        error_history = []
-        max_history = 6
-
-        # Timeout guard proportional to requested rotation  
-        timeout_s = max(8.0, 0.12 * abs(deg) + 3.0)  # Shorter timeout
-        start = time.time()
-
-        def clamp(v, lo, hi):
-            return max(lo, min(hi, v))
-
         def angle_diff(target, current):
-            """Calculate shortest angular difference between two angles in degrees."""
-            diff = target - current
-            # Wrap to [-180, 180]
-            while diff > 180:
-                diff -= 360
-            while diff <= -180:
-                diff += 360
+            """Calculate shortest angular difference"""
+            diff = normalize_angle(target - current)
             return diff
-
-        last_within = None
-        loop_count = 0
+        
+        # Get starting heading
+        current_heading = self.imu.get_heading()
+        target_heading = normalize_angle(current_heading + deg)
+        
+        if debug:
+            print(f"Starting rotation: {deg}° (from {current_heading:.1f}° to {target_heading:.1f}°)")
+        
+        # Rotation parameters
+        tolerance = 2.0  # degrees
+        max_turn_time = abs(deg) / 45.0 + 2.0  # Estimate based on ~45°/s turn rate
+        dt = 0.05  # 20Hz control loop
+        
+        # Turn direction and speed
+        turn_direction = 1 if deg > 0 else -1  # 1=CCW, -1=CW
+        base_speed = TURN_MIN_SPEED + int(0.3 * (TURN_MAX_SPEED - TURN_MIN_SPEED))
+        
+        start_time = time.time()
+        
         try:
-            while True:
-                if time.time() - start > timeout_s:
+            while time.time() - start_time < max_turn_time:
+                current_heading = self.imu.get_heading()
+                error = angle_diff(target_heading, current_heading)
+                
+                if debug:
+                    print(f"Current: {current_heading:6.1f}°, Target: {target_heading:6.1f}°, Error: {error:5.1f}°")
+                
+                # Check if we've reached the target
+                if abs(error) <= tolerance:
                     if debug:
-                        print(f"Rotation timeout after {timeout_s:.1f}s")
+                        print(f"Rotation complete! Final error: {error:.1f}°")
                     break
-
-                current_heading = self.imu.get_heading()  # degrees
-                # Calculate shortest signed difference
-                err = angle_diff(target_heading, current_heading)
-
-                # Check for oscillation pattern
-                error_history.append(err)
-                if len(error_history) > max_history:
-                    error_history.pop(0)
                 
-                # Detect oscillation: sign changes in recent history
-                oscillating = False
-                if len(error_history) >= 4:
-                    sign_changes = 0
-                    for i in range(1, len(error_history)):
-                        if (error_history[i] > 0) != (error_history[i-1] > 0):
-                            sign_changes += 1
-                    oscillating = sign_changes >= 2  # 2+ sign changes = oscillating
-
-                # Calculate PID terms
-                if loop_count > 0:
-                    derivative = (err - prev_error) / dt
-                else:
-                    derivative = 0.0
+                # Simple proportional control for speed
+                speed_factor = min(1.0, abs(error) / 20.0)  # Slow down as we approach target
+                turn_speed = int(TURN_MIN_SPEED + speed_factor * (base_speed - TURN_MIN_SPEED))
                 
-                integral += err * dt
-                integral = max(-integral_limit, min(integral_limit, integral))  # Clamp integral
+                # Set motor directions based on turn direction
+                if turn_direction > 0:  # CCW: left reverse, right forward
+                    self.motors.set_motor(L_MTR, RWD, turn_speed)
+                    self.motors.set_motor(R_MTR, FWD, turn_speed)
+                else:  # CW: left forward, right reverse
+                    self.motors.set_motor(L_MTR, FWD, turn_speed)
+                    self.motors.set_motor(R_MTR, RWD, turn_speed)
                 
-                # PID output in radians
-                pid_output = Kp * err + Ki * integral + Kd * derivative
-                prev_error = err
-
-                # Apply deadband to prevent tiny corrections that cause hunting
-                if abs(err) <= deadband_deg:
-                    if debug and loop_count % 8 == 0:
-                        print(f"In deadband: err={err:.2f}°")
-                    time.sleep(dt)
-                    loop_count += 1
-                    continue
-
-                if abs(err) <= tol_deg:
-                    # Use simple tolerance-based stopping
-                    if last_within is None:
-                        last_within = time.time()
-                        if debug:
-                            print(f"Entered tolerance: err={err:.2f}°")
-                    elif time.time() - last_within >= hold_time:
-                        if debug:
-                            print(f"Hold complete after {time.time() - last_within:.3f}s, stopping")
-                        break
-                else:
-                    if last_within is not None and debug:
-                        print(f"Left tolerance band: err={err:.2f}°")
-                    last_within = None
-
-                # Adaptive speed profile based on error and approach rate
-                err_deg = abs(err)
-                approaching = (err > 0 and derivative < 0) or (err < 0 and derivative > 0)
-                
-                # Base speed from error magnitude
-                if err_deg < 1.0:
-                    base_speed = TURN_MIN_SPEED  # 90 PWM - minimum
-                elif err_deg < 3.0:
-                    base_speed = TURN_MIN_SPEED + 3  # 93 PWM - crawl
-                elif err_deg < 8.0:
-                    base_speed = TURN_MIN_SPEED + 6  # 96 PWM - slow
-                elif err_deg < 20.0:
-                    base_speed = TURN_MIN_SPEED + 9  # 99 PWM - moderate
-                else:
-                    base_speed = TURN_MIN_SPEED + 12  # 102 PWM - max
-                
-                # Rate-based adjustment for smooth approach
-                rate_deg_s = abs(derivative) if derivative else 0
-                if approaching and rate_deg_s > 10:  # Fast approach - slow down
-                    speed = max(TURN_MIN_SPEED, base_speed - 5)
-                elif rate_deg_s > 20:  # Very fast rate - emergency slow
-                    speed = TURN_MIN_SPEED
-                else:
-                    speed = base_speed
-                
-                # Oscillation detection and mitigation
-                if oscillating:
-                    speed = TURN_MIN_SPEED  # Drop to absolute minimum
-                
-                speed = clamp(speed, TURN_MIN_SPEED, max_turn_speed)
-
-                # Debug every 8 loops
-                if debug and loop_count % 8 == 0:
-                    elapsed = time.time() - start
-                    in_tol = "TOL" if abs(err) <= tol_deg else "TURN"
-                    hold_time_str = f"hold:{time.time() - last_within:.2f}s" if last_within else "---"
-                    deriv_rate = derivative if derivative else 0
-                    hz = loop_count / elapsed if elapsed > 0 else 0
-                    osc_status = "OSC" if oscillating else "---"
-                    print(f"{elapsed:.2f}s {in_tol} err:{err:+6.2f}° rate:{deriv_rate:+5.0f}°/s spd:{speed:3d} {osc_status} {hold_time_str} ({hz:.0f}Hz)")
-
-                # Determine directions for in-place rotation
-                if err > 0:  # need to rotate CCW (positive heading direction)
-                    # CCW: left wheel backward, right wheel forward (FIXED DIRECTION)
-                    self.motors.set_motor(L_MTR, RWD, speed)
-                    self.motors.set_motor(R_MTR, FWD, speed)
-                else:       # need to rotate CW (negative heading direction)
-                    # CW: left wheel forward, right wheel backward (FIXED DIRECTION)
-                    self.motors.set_motor(L_MTR, FWD, speed)
-                    self.motors.set_motor(R_MTR, RWD, speed)
-
                 time.sleep(dt)
-                loop_count += 1
+            
+            # Timeout reached
+            if time.time() - start_time >= max_turn_time:
+                final_heading = self.imu.get_heading()
+                final_error = angle_diff(target_heading, final_heading)
+                if debug:
+                    print(f"Rotation timeout! Final error: {final_error:.1f}°")
+                    
         finally:
             self.motors.stop_motors()
             if debug:
                 final_heading = self.imu.get_heading()
-                final_err = angle_diff(target_heading, final_heading)
-                print(f"Final error: {final_err:+.2f}°, loops: {loop_count}")
+                actual_rotation = angle_diff(final_heading, current_heading)
+                print(f"Rotation summary: requested {deg}°, actual {actual_rotation:.1f}°")
 
-    def _take_snapshot(self):
-        return self.camera.take_snapshot()
-    
-    def explore(self):
-        # self._move_forward(100)
-        self._rotate_ccw(90)
+
+

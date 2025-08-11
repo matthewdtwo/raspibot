@@ -19,7 +19,6 @@ class MotorController:
         self.motorController.set_drive(L_MTR, RWD, 0)
 
         self.motorController.enable()
-        print("Motor enabled")
         time.sleep(.25)
 
     def set_motor(self, motor, direction, speed):
