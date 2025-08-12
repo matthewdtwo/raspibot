@@ -8,6 +8,7 @@ dependencies = [
     "adafruit-circuitpython-bno055>=5.4.20",
     "ahrs>=0.3.1",
     "flask>=3.1.1",
+    "flask-socketio>=5.4.1",
     "langchain-ollama>=0.3.6",
     "langgraph>=0.6.4",
     "picamera2>=0.3.30",

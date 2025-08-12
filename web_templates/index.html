@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Exploration Monitor</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            height: 100vh;
+            display: grid;
+            grid-template-areas: 
+                "header header header"
+                "status conversation snapshots";
+            grid-template-rows: 60px 1fr;
+            grid-template-columns: 300px 1fr 350px;
+            gap: 10px;
+            padding: 10px;
+        }
+        
+        .header {
+            grid-area: header;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .status-panel {
+            grid-area: status;
+            background-color: #2d2d2d;
+            border-radius: 8px;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        
+        .conversation-panel {
+            grid-area: conversation;
+            background-color: #2d2d2d;
+            border-radius: 8px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .snapshots-panel {
+            grid-area: snapshots;
+            background-color: #2d2d2d;
+            border-radius: 8px;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        
+        .panel-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #4fc3f7;
+            border-bottom: 2px solid #4fc3f7;
+            padding-bottom: 5px;
+        }
+        
+        .status-item {
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: #3d3d3d;
+            border-radius: 6px;
+            border-left: 4px solid #4fc3f7;
+        }
+        
+        .status-label {
+            font-weight: 600;
+            color: #b0b0b0;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .status-value {
+            font-size: 16px;
+            margin-top: 5px;
+        }
+        
+        .status-active {
+            color: #4caf50;
+        }
+        
+        .status-inactive {
+            color: #f44336;
+        }
+        
+        .conversation-log {
+            flex: 1;
+            overflow-y: auto;
+            background-color: #1e1e1e;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 10px;
+            max-height: calc(100vh - 200px);
+        }
+        
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 6px;
+            word-wrap: break-word;
+        }
+        
+        .message-user {
+            background-color: #1976d2;
+            margin-left: 20px;
+        }
+        
+        .message-agent {
+            background-color: #388e3c;
+            margin-right: 20px;
+        }
+        
+        .message-tool {
+            background-color: #f57c00;
+            margin-left: 10px;
+            margin-right: 10px;
+            border-left: 4px solid #ff9800;
+        }
+        
+        .message-system {
+            background-color: #616161;
+            font-style: italic;
+            border-left: 4px solid #9e9e9e;
+        }
+        
+        .message-snapshot {
+            background-color: #7b1fa2;
+            margin-right: 20px;
+            border-left: 4px solid #9c27b0;
+        }
+        
+        .message-debug {
+            background-color: #424242;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            border-left: 4px solid #607d8b;
+            margin-left: 5px;
+            margin-right: 5px;
+        }
+        
+        .message-timestamp {
+            font-size: 11px;
+            color: #b0b0b0;
+            margin-bottom: 5px;
+        }
+        
+        .message-content {
+            line-height: 1.4;
+        }
+        
+        .snapshot-item {
+            margin-bottom: 15px;
+            background-color: #3d3d3d;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        
+        .snapshot-image {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+        
+        .snapshot-image:hover {
+            transform: scale(1.05);
+        }
+        
+        .snapshot-info {
+            padding: 10px;
+        }
+        
+        .snapshot-timestamp {
+            font-size: 11px;
+            color: #b0b0b0;
+        }
+        
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            z-index: 1000;
+        }
+        
+        .connected {
+            background-color: #4caf50;
+            color: white;
+        }
+        
+        .disconnected {
+            background-color: #f44336;
+            color: white;
+        }
+        
+        /* Modal for enlarged snapshots */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+        }
+        
+        .modal-content {
+            margin: auto;
+            display: block;
+            width: 80%;
+            max-width: 800px;
+            max-height: 80%;
+            margin-top: 5%;
+        }
+        
+        .close {
+            position: absolute;
+            top: 15px;
+            right: 35px;
+            color: #f1f1f1;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        .close:hover {
+            color: #bbb;
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #4fc3f7;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #29b6f6;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 Robot Exploration Monitor</h1>
+    </div>
+    
+    <div class="connection-status" id="connectionStatus">
+        <span id="statusText">Connecting...</span>
+    </div>
+    
+    <div class="status-panel">
+        <div class="panel-title">Robot Status</div>
+        
+        <div class="status-item">
+            <div class="status-label">Status</div>
+            <div class="status-value" id="robotActive">Unknown</div>
+        </div>
+        
+        <div class="status-item">
+            <div class="status-label">Current Action</div>
+            <div class="status-value" id="currentAction">Unknown</div>
+        </div>
+        
+        <div class="status-item">
+            <div class="status-label">Position</div>
+            <div class="status-value" id="robotPosition">Unknown</div>
+        </div>
+        
+        <div class="status-item">
+            <div class="status-label">Last Update</div>
+            <div class="status-value" id="lastUpdate">Unknown</div>
+        </div>
+    </div>
+    
+    <div class="conversation-panel">
+        <div class="panel-title">Conversation Log</div>
+        <div class="conversation-log" id="conversationLog">
+            <!-- Messages will be added here dynamically -->
+        </div>
+    </div>
+    
+    <div class="snapshots-panel">
+        <div class="panel-title">Recent Snapshots</div>
+        <div id="snapshotsList">
+            <!-- Snapshots will be added here dynamically -->
+        </div>
+    </div>
+    
+    <!-- Modal for enlarged images -->
+    <div id="imageModal" class="modal">
+        <span class="close">&times;</span>
+        <img class="modal-content" id="modalImage">
+    </div>
+    
+    <script>
+        // Initialize Socket.IO connection
+        const socket = io();
+        
+        // Connection status tracking
+        const connectionStatus = document.getElementById('connectionStatus');
+        const statusText = document.getElementById('statusText');
+        
+        socket.on('connect', function() {
+            connectionStatus.className = 'connection-status connected';
+            statusText.textContent = 'Connected';
+            console.log('Connected to robot web interface');
+        });
+        
+        socket.on('disconnect', function() {
+            connectionStatus.className = 'connection-status disconnected';
+            statusText.textContent = 'Disconnected';
+            console.log('Disconnected from robot web interface');
+        });
+        
+        // Status updates
+        socket.on('status_update', function(status) {
+            updateStatus(status);
+        });
+        
+        // New messages
+        socket.on('new_message', function(message) {
+            addMessage(message);
+        });
+        
+        // New snapshots
+        socket.on('new_snapshot', function(snapshot) {
+            addSnapshot(snapshot);
+        });
+        
+        function updateStatus(status) {
+            document.getElementById('robotActive').textContent = status.active ? 'Active' : 'Inactive';
+            document.getElementById('robotActive').className = 'status-value ' + (status.active ? 'status-active' : 'status-inactive');
+            
+            document.getElementById('currentAction').textContent = status.current_action || 'Unknown';
+            
+            const position = status.position || {};
+            document.getElementById('robotPosition').textContent = 
+                `X: ${position.x || 0}, Y: ${position.y || 0}, H: ${position.heading || 0}°`;
+            
+            document.getElementById('lastUpdate').textContent = 
+                new Date(status.last_update).toLocaleString();
+        }
+        
+        function addMessage(message) {
+            const log = document.getElementById('conversationLog');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message message-${message.type}`;
+            
+            const timestamp = new Date(message.timestamp).toLocaleTimeString();
+            
+            messageDiv.innerHTML = `
+                <div class="message-timestamp">${timestamp} - ${message.type.toUpperCase()}</div>
+                <div class="message-content">${escapeHtml(message.content)}</div>
+            `;
+            
+            log.appendChild(messageDiv);
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        function addSnapshot(snapshot) {
+            const list = document.getElementById('snapshotsList');
+            const snapshotDiv = document.createElement('div');
+            snapshotDiv.className = 'snapshot-item';
+            
+            const timestamp = new Date(snapshot.timestamp).toLocaleTimeString();
+            const snapshotCount = snapshot.snapshot_count || '';
+            const countLabel = snapshotCount ? `Snapshot ${snapshotCount}` : 'Snapshot';
+            
+            snapshotDiv.innerHTML = `
+                <img src="${snapshot.url}" alt="Robot Snapshot" class="snapshot-image" onclick="openModal('${snapshot.url}')">
+                <div class="snapshot-info">
+                    <div class="snapshot-timestamp">${countLabel} - ${timestamp}</div>
+                </div>
+            `;
+            
+            list.insertBefore(snapshotDiv, list.firstChild);
+            
+            // Keep only latest 20 snapshots in view
+            while (list.children.length > 20) {
+                list.removeChild(list.lastChild);
+            }
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function openModal(imageSrc) {
+            const modal = document.getElementById('imageModal');
+            const modalImg = document.getElementById('modalImage');
+            modal.style.display = 'block';
+            modalImg.src = imageSrc;
+        }
+        
+        // Modal close functionality
+        document.querySelector('.close').onclick = function() {
+            document.getElementById('imageModal').style.display = 'none';
+        }
+        
+        window.onclick = function(event) {
+            const modal = document.getElementById('imageModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+        
+        // Load initial data
+        fetch('/api/status')
+            .then(response => response.json())
+            .then(status => updateStatus(status));
+        
+        fetch('/api/conversation')
+            .then(response => response.json())
+            .then(messages => {
+                messages.forEach(message => addMessage(message));
+            });
+        
+        fetch('/api/snapshots')
+            .then(response => response.json())
+            .then(snapshots => {
+                snapshots.forEach(snapshot => addSnapshot(snapshot));
+            });
+    </script>
+</body>
+</html>

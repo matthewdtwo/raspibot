@@ -3,11 +3,12 @@ import math
 import signal
 import atexit
 
-from llm import LLMs
 from motor_controller import MotorController
 from encoders import Encoders
 from imu import IMU
 from camera import Camera
+
+from langchain_core.tools import tool
 
 from config import (
     WHEEL_DIAMETER,
@@ -27,10 +28,11 @@ from config import (
 
 
 class Robot:
-    def __init__(self):
+    def __init__(self, web_interface=None):
         self.motors = MotorController()
         self.encoders = Encoders()
         self.imu = IMU()
+        self.web_interface = web_interface
         
         # Register cleanup handlers for safe shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -40,6 +42,8 @@ class Robot:
     def _signal_handler(self, signum, frame):
         """Handle interrupt signals by stopping motors and exiting"""
         print(f"\nReceived signal {signum}, stopping motors...")
+        if self.web_interface:
+            self.web_interface.update_status(active=False, current_action="Emergency stop")
         self.cleanup()
         exit(0)
 
@@ -47,6 +51,8 @@ class Robot:
         """Safely stop all motors"""
         try:
             self.motors.stop_motors()
+            if self.web_interface:
+                self.web_interface.update_status(active=False, current_action="Stopped")
             print("Motors stopped safely")
         except Exception as e:
             print(f"Error stopping motors: {e}")
@@ -59,12 +65,17 @@ class Robot:
         """Context manager exit - ensures cleanup"""
         self.cleanup()
 
+    @tool
     def move_forward(self, mm: int, debug: bool = False):
         """Drive forward a distance in millimeters using a simple PID on encoder counts.
-
+        Does not account for slippage if you get stuck on something, so move in small increments.
         Controls overall progress using average mm while keeping wheels aligned.
         Uses per-wheel encoder calibration and normalized signs.
         """
+        if self.web_interface:
+            self.web_interface.update_status(current_action=f"Moving forward {mm}mm")
+            self.web_interface.log_debug(f"Starting forward movement: {mm}mm")
+            
         # Conversion from mm to encoder pulses for each wheel
         wheel_circumference_mm = math.pi * WHEEL_DIAMETER
         pulses_per_mm_L = PULSES_PER_ROTATION_LEFT / wheel_circumference_mm
@@ -179,14 +190,20 @@ class Robot:
                 time.sleep(dt)
         finally:
             self.motors.stop_motors()
+            if self.web_interface:
+                self.web_interface.update_status(current_action="Idle")
+                self.web_interface.log_debug(f"Completed forward movement")
+            
+            # Calculate final position for return value
+            raw_left_final, raw_right_final = self.encoders.get_counts()
+            left_final = ENCODER_LEFT_SIGN * raw_left_final
+            right_final = ENCODER_RIGHT_SIGN * raw_right_final
+            final_mm = 0.5 * (left_final / pulses_per_mm_L + right_final / pulses_per_mm_R)
+            error_mm = final_mm - mm
             
             # Final debug output
             if debug:
-                raw_left_final, raw_right_final = self.encoders.get_counts()
-                left_final = ENCODER_LEFT_SIGN * raw_left_final
-                right_final = ENCODER_RIGHT_SIGN * raw_right_final
-                final_mm = 0.5 * (left_final / pulses_per_mm_L + right_final / pulses_per_mm_R)
-                print(f"  Final: {final_mm:.1f}mm (requested {mm}mm, error: {final_mm-mm:+.1f}mm)")
+                print(f"  Final: {final_mm:.1f}mm (requested {mm}mm, error: {error_mm:+.1f}mm)")
                 print(f"  Final pulses - Left: {left_final}, Right: {right_final}")
                 
                 # Calculate actual pulses per mm based on this run
@@ -200,14 +217,25 @@ class Robot:
                     suggested_ppr_R = int(actual_ppm_R * wheel_circumference_mm)
                     print(f"  Suggested PPR - Left: {suggested_ppr_L}, Right: {suggested_ppr_R}")
 
+            # Return movement result
+            result = f"Forward movement completed. Requested: {mm}mm, Actual: {final_mm:.1f}mm, Error: {error_mm:+.1f}mm"
+            if self.web_interface:
+                self.web_interface.log_debug(result)
+            return result
 
 
+    @tool
     def move_backward(self, mm: int, debug: bool = False):
         """Drive backward a distance in millimeters using a simple PID on encoder counts.
+        Use sparingly, since you can't see behind you. Only move in small increments. Does not account for wheel slippage if you get stuck.
 
         Controls overall progress using average mm while keeping wheels aligned.
         Uses per-wheel encoder calibration and normalized signs.
         """
+        if self.web_interface:
+            self.web_interface.update_status(current_action=f"Moving backward {mm}mm")
+            self.web_interface.log_debug(f"Starting backward movement: {mm}mm")
+            
         # Conversion from mm to encoder pulses for each wheel
         wheel_circumference_mm = math.pi * WHEEL_DIAMETER
         pulses_per_mm_L = PULSES_PER_ROTATION_LEFT / wheel_circumference_mm
@@ -323,14 +351,20 @@ class Robot:
                 time.sleep(dt)
         finally:
             self.motors.stop_motors()
+            if self.web_interface:
+                self.web_interface.update_status(current_action="Idle")
+                self.web_interface.log_debug(f"Completed backward movement")
+            
+            # Calculate final position for return value
+            raw_left_final, raw_right_final = self.encoders.get_counts()
+            left_final = ENCODER_LEFT_SIGN * raw_left_final
+            right_final = ENCODER_RIGHT_SIGN * raw_right_final
+            final_mm = 0.5 * (abs(left_final) / pulses_per_mm_L + abs(right_final) / pulses_per_mm_R)
+            error_mm = final_mm - mm
             
             # Final debug output
             if debug:
-                raw_left_final, raw_right_final = self.encoders.get_counts()
-                left_final = ENCODER_LEFT_SIGN * raw_left_final
-                right_final = ENCODER_RIGHT_SIGN * raw_right_final
-                final_mm = 0.5 * (abs(left_final) / pulses_per_mm_L + abs(right_final) / pulses_per_mm_R)
-                print(f"  Final: {final_mm:.1f}mm (requested {mm}mm, error: {final_mm-mm:+.1f}mm)")
+                print(f"  Final: {final_mm:.1f}mm (requested {mm}mm, error: {error_mm:+.1f}mm)")
                 print(f"  Final pulses - Left: {left_final}, Right: {right_final}")
                 
                 # Calculate actual pulses per mm based on this run
@@ -344,6 +378,13 @@ class Robot:
                     suggested_ppr_R = int(actual_ppm_R * wheel_circumference_mm)
                     print(f"  Suggested PPR - Left: {suggested_ppr_L}, Right: {suggested_ppr_R}")
 
+            # Return movement result
+            result = f"Backward movement completed. Requested: {mm}mm, Actual: {final_mm:.1f}mm, Error: {error_mm:+.1f}mm"
+            if self.web_interface:
+                self.web_interface.log_debug(result)
+            return result
+
+    @tool
     def rotate_cw(self, deg: int, debug: bool = False):
         """Rotate clockwise by specified degrees.
 
@@ -351,8 +392,12 @@ class Robot:
             deg: Degrees to rotate clockwise (positive value)
             debug: Print debug information if True
         """
-        self._rotate_by_deg(-abs(deg), debug=debug)
+        if self.web_interface:
+            self.web_interface.update_status(current_action=f"Rotating clockwise {deg}°")
+            self.web_interface.log_debug(f"Starting clockwise rotation: {deg}°")
+        return self._rotate_by_deg(-abs(deg), debug=debug)
 
+    @tool
     def rotate_ccw(self, deg: int, debug: bool = False):
         """Rotate counter-clockwise by specified degrees.
         
@@ -362,16 +407,16 @@ class Robot:
         """
         if debug:
             print(f"Starting CCW rotation of {deg}°")
+        if self.web_interface:
+            self.web_interface.update_status(current_action=f"Rotating counter-clockwise {deg}°")
+            self.web_interface.log_debug(f"Starting counter-clockwise rotation: {deg}°")
         # Counter-clockwise is positive heading
-        self._rotate_by_deg(abs(deg), debug=debug)
+        return self._rotate_by_deg(abs(deg), debug=debug)
 
     def _rotate_by_deg(self, deg: float, debug: bool = False):
-        """Rotate the robot by a specified number of degrees using IMU feedback.
+        # Store the requested amount (absolute value) for error calculation
+        requested_deg = abs(deg)
         
-        Args:
-            deg: Degrees to rotate (positive=CCW, negative=CW)
-            debug: Print debug information if True
-        """
         def normalize_angle(angle):
             """Normalize angle to [-180, 180] range"""
             while angle > 180:
@@ -440,10 +485,25 @@ class Robot:
                     
         finally:
             self.motors.stop_motors()
+            if self.web_interface:
+                self.web_interface.update_status(current_action="Idle")
+                self.web_interface.log_debug(f"Completed rotation")
+            
+            # Calculate actual rotation for return value
+            final_heading = self.imu.get_heading()
+            raw_rotation = angle_diff(final_heading, current_heading)
+            actual_rotation = abs(raw_rotation)
+            error_deg = actual_rotation - requested_deg
+            
             if debug:
-                final_heading = self.imu.get_heading()
-                actual_rotation = angle_diff(final_heading, current_heading)
-                print(f"Rotation summary: requested {deg}°, actual {actual_rotation:.1f}°")
+                print(f"Rotation debug: start={current_heading:.1f}°, end={final_heading:.1f}°, raw_diff={raw_rotation:.1f}°")
+                print(f"Rotation summary: requested {requested_deg}°, actual {actual_rotation:.1f}°")
+
+            # Return rotation result with debug info
+            result = f"Rotation completed. Requested: {requested_deg:.1f}°, Actual: {actual_rotation:.1f}°, Error: {error_deg:+.1f}° (Start: {current_heading:.1f}°, End: {final_heading:.1f}°)"
+            if self.web_interface:
+                self.web_interface.log_debug(result)
+            return result
 
 
 
