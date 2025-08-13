@@ -14,7 +14,7 @@ if __name__ == "__main__":
 
     robot = Robot(move_controller=MoveController(), llm=LLMs(), camera=Camera(persistent_snapshots=True), web_interface=web_interface)
 
-    report = robot.explore()
+    report = robot.explore(steps=10)
 
     # pretty print the report
 

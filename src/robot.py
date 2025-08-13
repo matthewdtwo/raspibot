@@ -35,13 +35,13 @@ class Robot:
                 print(f"Invalid rotation amount: {action}")
         if action.type == "linear":
             print(action)
-            raise Exception("unable to move forward")
-            # if action.amount > 0:
-            #     return self.move_controller.move_forward(action.amount)
-            # elif action.amount < 0:
-            #     return self.move_controller.move_backward(action.amount)
-            # else:
-            #     print("Invalid linear movement amount")
+            # raise Exception("unable to move forward")
+            if action.amount > 0:
+                return self.move_controller.move_forward(action.amount)
+            elif action.amount < 0:
+                return self.move_controller.move_backward(action.amount)
+            else:
+                print("Invalid linear movement amount")
 
         raise Exception("Invalid movement action")
 
