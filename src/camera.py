@@ -23,6 +23,7 @@ class Camera:
 
         self._picam2.start()
         time.sleep(1)
+        print("Camera initialized")
 
     def take_snapshot(self) -> str:
         """Take a snapshot of what's in front of the robot and return the file path"""

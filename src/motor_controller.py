@@ -27,14 +27,3 @@ class MotorController:
     def stop_motors(self):
         self.motorController.set_drive(R_MTR, FWD, 0)
         self.motorController.set_drive(L_MTR, FWD, 0)
-
-        
-
-if __name__ == "__main__":
-    motor_controller = MotorController()
-    
-    # set both motors to forward for 5 seconds
-    motor_controller.set_motor(L_MTR, FWD, 100)
-    motor_controller.set_motor(R_MTR, FWD, 100)
-    time.sleep(2)
-    motor_controller.stop_motors()

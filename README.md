@@ -16,7 +16,8 @@ Motors
 
 move_forward (distance in mm)
 move_backward (distance in mm)
-rotate_counterclockwise (rotation in degrees)
-rotate_clockwise (rotation in degrees)
-take_picture (None)
+rotate_ccw (rotation in degrees)
+rotate_cw (rotation in degrees)
+take_snapshot (picture)
+
 
