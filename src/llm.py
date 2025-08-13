@@ -26,7 +26,7 @@ class LLMs:
         return response # type: ignore
     
 
-    def describe_image(self, image_path, previous_descriptions = None) -> str:
+    def describe_image(self, image_path, previous_descriptions = []) -> str:
         # get image from path and base64 encode it.
         with open(image_path, "rb") as image_file:
             encoded_string = b64encode(image_file.read()).decode("utf-8")
@@ -38,7 +38,8 @@ class LLMs:
 
             text_prompt = ""
 
-            if previous_descriptions:
+            if len(previous_descriptions) > 0:
+                text_prompt += "Here are your previous observations: Use them to maintain consistent terminology when describing the scene. Only describe the changes in the new image. "
                 text_prompt += " ".join(previous_descriptions)
 
             text_prompt += self._description_prompt

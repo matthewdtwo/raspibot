@@ -169,7 +169,7 @@ class MoveController:
         return MovementResult(
             type="linear",
             target=mm,
-            actual=final_mm,
+            actual=int(final_mm),
             unit="mm"
         )
 
@@ -311,7 +311,7 @@ class MoveController:
             return MovementResult(
                 type="rotation",
                 target=int(requested_deg),
-                actual=actual_rotation,
+                actual=int(actual_rotation),
                 unit="deg"
             )
 

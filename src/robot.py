@@ -39,7 +39,7 @@ class Robot:
             if action.amount > 0:
                 return self.move_controller.move_forward(action.amount)
             elif action.amount < 0:
-                return self.move_controller.move_backward(action.amount)
+                return self.move_controller.move_backward(abs(action.amount))
             else:
                 print("Invalid linear movement amount")
 
@@ -75,6 +75,10 @@ class Robot:
         if self.web_interface:
             self.web_interface.update_status(active=True, current_action="Thinking")
 
+        if len(self.state.previous_movements) > 0:
+            description += "\n\nPrevious Movements: "
+            description += "\n".join(f"- {mv}" for mv in self.state.previous_movements)
+
         action = self.llm.decide_next_action(description)
         self.state.previous_movements.append(action)
 
@@ -88,7 +92,7 @@ class Robot:
         if self.web_interface:
             self.web_interface.log_message("action", f"Result: {result}")
 
-        sleep(1) # sleep so the motion can finish before taking the next snapshot.
+        sleep(2) # sleep so the motion can finish before taking the next snapshot.
 
     def explore(self, steps=5) -> RobotState:
         print("Beginning exploration")
@@ -107,5 +111,6 @@ class Robot:
 
         if self.web_interface:
             self.web_interface.log_message("report", f"Final report: {self.state.current_report}")
+            self.web_interface.update_status(active=False, status="Finished...")
 
         return self.state
