@@ -98,4 +98,14 @@ class Robot:
 
         sleep(5) # stay up briefly
 
+        # summarize into report.
+        # combine snapshot descriptions and movement history
+        self.state.current_report = self.llm.summarize(descriptions=
+            [f"Snapshot descriptions: {self.state.snapshot_descriptions}",
+             f"Movements performed: {self.state.previous_movements}"]
+        )
+
+        if self.web_interface:
+            self.web_interface.log_message("report", f"Final report: {self.state.current_report}")
+
         return self.state

@@ -10,7 +10,7 @@ from config import OLLAMA_HOST, TEMPERATURE
 from models import Movement
 
 class LLMs:
-    _system_prompt = """You're controlling a small, wheeled robotic exploration system. Your objective is exploring the environment."""
+    _system_prompt = """You're controlling a small, wheeled robotic exploration system. Your objective is exploring the environment. It is equipped with a motion control system for movement and a vision system for capturing images. No flattery."""
     _description_prompt = """Briefly describe the image. Identify the terrain, and any objects of interest."""
     _action_prompt = """What action should the robot take?"""
 

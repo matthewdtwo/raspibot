@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 class Movement(BaseModel):
     type: Literal["rotation", "linear"]
-    unit: Literal["mm", "deg"] = Field(description="positive for forward / clockwise. negative for backward / anti-clockwise rotation limited to 180 degrees")
-    amount: int
+    unit: Literal["mm", "deg"]
+    amount: int = Field(description="positive for forward / clockwise. negative for backward / anti-clockwise rotation limited to 180 degrees")
 
 @dataclass
 class MovementResult:
