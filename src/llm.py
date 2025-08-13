@@ -25,103 +25,12 @@ class LLMs:
         self._previous_descriptions = []
         self._max_description_history = 5  # Keep last 5 descriptions for context
 
-        # Create wrapper functions for robot tools that capture return values
-        @tool
-        def move_forward_tool(mm: int) -> str:
-            """Move the robot forward by the specified distance in millimeters. Returns actual movement results. Does not account for slippage if you get stuck on something. Don't worry about minimal errors reported."""
-            if self._web_interface:
-                self._web_interface.update_status(current_action=f"Moving forward {mm}mm")
-            
-            result = None
-            for tool in tools:
-                if hasattr(tool, '__name__') and tool.__name__ == 'move_forward':
-                    result = tool(mm, debug=True)
-                    break
-            
-            if result and self._web_interface:
-                self._web_interface.log_message('tool', f"Movement result: {result}")
-            
-            return result or f"Forward movement of {mm}mm completed"
 
-        @tool  
-        def move_backward_tool(mm: int) -> str:
-            """Move the robot backward by the specified distance in millimeters. Returns actual movement results. Use sparringly since you don't know what's behind you. Only move backwards in small increments, and only as a last measure.."""
-            if self._web_interface:
-                self._web_interface.update_status(current_action=f"Moving backward {mm}mm")
-            
-            result = None
-            for tool in tools:
-                if hasattr(tool, '__name__') and tool.__name__ == 'move_backward':
-                    result = tool(mm, debug=True)
-                    break
-            
-            if result and self._web_interface:
-                self._web_interface.log_message('tool', f"Movement result: {result}")
-            
-            return result or f"Backward movement of {mm}mm completed"
-
-        @tool
-        def rotate_cw_tool(deg: int) -> str:
-            """Rotate the robot clockwise by the specified degrees. Returns actual rotation results. Don't worry about small errors in rotation."""
-            if self._web_interface:
-                self._web_interface.update_status(current_action=f"Rotating clockwise {deg}°")
-            
-            result = None
-            for tool in tools:
-                if hasattr(tool, '__name__') and tool.__name__ == 'rotate_cw':
-                    result = tool(deg, debug=True)
-                    break
-            
-            if result and self._web_interface:
-                self._web_interface.log_message('tool', f"Rotation result: {result}")
-            
-            return result or f"Clockwise rotation of {deg}° completed"
-
-        @tool
-        def rotate_ccw_tool(deg: int) -> str:
-            """Rotate the robot counter-clockwise by the specified degrees. Returns actual rotation results. Don't worry about small errors in rotation."""
-            if self._web_interface:
-                self._web_interface.update_status(current_action=f"Rotating counter-clockwise {deg}°")
-            
-            result = None
-            for tool in tools:
-                if hasattr(tool, '__name__') and tool.__name__ == 'rotate_ccw':
-                    result = tool(deg, debug=True)
-                    break
-            
-            if result and self._web_interface:
-                self._web_interface.log_message('tool', f"Rotation result: {result}")
-            
-            return result or f"Counter-clockwise rotation of {deg}° completed"
-
-        # Create a combined tool that takes a snapshot and analyzes it
-        @tool
-        def take_snapshot_and_analyze() -> str:
-            """Take a snapshot of the environment and return an analysis of what's visible"""
-            if self._camera is None:
-                return "Error: No camera available"
-            
-            if self._web_interface:
-                self._web_interface.update_status(current_action="Taking snapshot")
-            
-            # Take snapshot
-            image_path = self._camera.take_snapshot()
-            
-            # Analyze it
-            description = self._get_image_description(image_path)
-            
-            # Log to web interface
-            if self._web_interface:
-                self._web_interface.log_snapshot(image_path, description)
-                self._web_interface.update_status(current_action="Analyzing snapshot")
-            
-            return f"Snapshot taken and analyzed. Description: {description}"
         
         # Add the combined vision tool to the tools list
-        agent_tools = [move_forward_tool, move_backward_tool, rotate_cw_tool, rotate_ccw_tool, take_snapshot_and_analyze]
 
         self.agent = create_react_agent(
-            tools=agent_tools,
+            tools=tools,
             model=self._tool_model,
             prompt=self._agent_prompt,
             debug=self._debug
@@ -232,10 +141,3 @@ class LLMs:
                 pass  # File might already be deleted
             
         return description
-    
-    def clear_description_history(self):
-        """Clear the history of previous descriptions (useful for starting a new exploration)"""
-        self._previous_descriptions = []
-        if self._web_interface:
-            self._web_interface.log_message('system', 'Vision description history cleared for new exploration session')
-

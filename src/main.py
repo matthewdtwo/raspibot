@@ -2,7 +2,6 @@ from robot import Robot
 from camera import Camera
 from llm import LLMs
 from web_interface import WebInterface
-import threading
 import time
 
 
