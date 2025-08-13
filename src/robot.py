@@ -45,6 +45,8 @@ class Robot:
 
     def explore(self) -> RobotState:
         print("Beginning exploration")
+        if self.web_interface:
+            self.web_interface.update_status(active=True, current_action="Exploring")
 
         initial_snapshot_path = self.camera.take_snapshot()
 
@@ -52,16 +54,22 @@ class Robot:
         self.state.snapshot_descriptions.append(description)
     
         if len(self.state.snapshot_descriptions) > 5:
+            if self.web_interface:
+                self.web_interface.update_status(active=True, current_action="Summarizing snapshots")
+
             # summarize if we have more than 5 descriptions to keep context smaller
             summary = self.llm.summarize(self.state.snapshot_descriptions)
             self.state.snapshot_descriptions = [summary]
 
-
-
-        print("Deciding action")
+        print("Thinking")
+        if self.web_interface:
+            self.web_interface.update_status(active=True, current_action="Thinking")
 
         action = self.llm.decide_next_action(description)
         self.state.previous_movements.append(action)
+
+        if self.web_interface:
+            self.web_interface.update_status(active=True, current_action="Taking action")
 
         self._take_action(action)
 

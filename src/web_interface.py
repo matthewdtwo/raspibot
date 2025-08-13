@@ -6,12 +6,18 @@ import threading
 import time
 from datetime import datetime
 import glob
+import logging
 
 class WebInterface:
     def __init__(self, port=5000):
         self.app = Flask(__name__, template_folder='../web_templates', static_folder='../web_static')
         self.app.config['SECRET_KEY'] = 'robot_exploration_secret'
-        self.socketio = SocketIO(self.app, cors_allowed_origins="*")
+        
+        # Disable Flask request logging
+        log = logging.getLogger('werkzeug')
+        log.setLevel(logging.ERROR)
+        
+        self.socketio = SocketIO(self.app, cors_allowed_origins="*", logger=False, engineio_logger=False)
         self.port = port
         
         # Data storage
@@ -125,7 +131,8 @@ class WebInterface:
     def run(self, debug=False):
         """Run the web server"""
         print(f"🌐 Starting web interface on http://localhost:{self.port}")
-        self.socketio.run(self.app, host='0.0.0.0', port=self.port, debug=debug)
+        # Disable access logging
+        self.socketio.run(self.app, host='0.0.0.0', port=self.port, debug=False, use_reloader=False)
     
     def run_threaded(self, debug=False):
         """Run the web server in a separate thread"""

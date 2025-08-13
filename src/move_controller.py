@@ -258,8 +258,8 @@ class MoveController:
     def _execute_rotation(self, deg: float, debug: bool = False) -> MovementResult:
         requested_deg = abs(deg)
 
-        current_heading = self.imu.get_heading()
-        target_heading = self._normalize_angle(current_heading + deg)
+        start_heading = self.imu.get_heading()
+        target_heading = self._normalize_angle(start_heading + deg)
 
         tolerance = 2.0
         max_turn_time = abs(deg) / 45.0 + 2.0
@@ -301,12 +301,12 @@ class MoveController:
             
             # Calculate actual rotation for return value
             final_heading = self.imu.get_heading()
-            raw_rotation = self._angle_diff(final_heading, current_heading)
+            raw_rotation = self._angle_diff(final_heading, start_heading)
             actual_rotation = abs(raw_rotation)
             error_deg = actual_rotation - requested_deg
             
             # Return rotation result with debug info
-            print(f"Rotation completed. Requested: {requested_deg:.1f}°, Actual: {actual_rotation:.1f}°, Error: {error_deg:+.1f}° (Start: {current_heading:.1f}°, End: {final_heading:.1f}°)")
+            print(f"Rotation completed. Requested: {requested_deg:.1f}°, Actual: {actual_rotation:.1f}°, Error: {error_deg:+.1f}° (Start: {start_heading:.1f}°, End: {final_heading:.1f}°)")
 
             return MovementResult(
                 type="rotation",
@@ -316,7 +316,7 @@ class MoveController:
             )
 
 
-if __name__ == "__main__":
-    mc = MoveController()
-    mc.rotate_ccw(45)
-    mc.cleanup()
+# if __name__ == "__main__":
+#     mc = MoveController()
+#     mc.rotate_cw(90)
+#     mc.cleanup()
