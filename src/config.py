@@ -23,3 +23,4 @@ ENCODER_LEFT_SIGN = -1
 ENCODER_RIGHT_SIGN = 1
 
 OLLAMA_HOST = "http://vengeance.matthewtwo.com:11434"
+TEMPERATURE = 1

@@ -32,7 +32,7 @@ class Robot:
             elif action.amount < 0 and action.amount >= -180:
                 return self.move_controller.rotate_ccw(action.amount)
             else:
-                print("Invalid rotation amount")
+                print(f"Invalid rotation amount: {action}")
         if action.type == "linear":
             print(action)
             raise Exception("unable to move forward")
@@ -83,8 +83,12 @@ class Robot:
 
             self.web_interface.log_message("action", f"Decided to perform action: {action}")
 
-        self._take_action(action)
-        sleep(1)
+        result = self._take_action(action)
+
+        if self.web_interface:
+            self.web_interface.log_message("action", f"Result: {result}")
+
+        sleep(1) # sleep so the motion can finish before taking the next snapshot.
 
     def explore(self, steps=5) -> RobotState:
         print("Beginning exploration")
