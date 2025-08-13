@@ -11,7 +11,7 @@ from models import Movement
 
 class LLMs:
     _system_prompt = """You're a small, wheeled robotic exploration system, tasked with exploring the environment."""
-    _description_prompt = """Describe the image."""
+    _description_prompt = """Briefly describe the image. Identify the terrain, and any objects of interest."""
 
     def __init__(self, model="gemma3:12b"):
         self.llm = ChatOllama(model=model, base_url=OLLAMA_HOST)

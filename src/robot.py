@@ -81,6 +81,8 @@ class Robot:
         if self.web_interface:
             self.web_interface.update_status(active=True, current_action="Taking action")
 
+            self.web_interface.log_message("action", f"Decided to perform action: {action}")
+
         self._take_action(action)
         sleep(1)
 
