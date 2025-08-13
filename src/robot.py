@@ -1,5 +1,6 @@
-from typing import List, Literal
-from pydantic import BaseModel, Field
+from typing import List
+from time import sleep
+
 
 from camera import Camera
 from llm import LLMs, Movement
@@ -33,7 +34,8 @@ class Robot:
             else:
                 print("Invalid rotation amount")
         if action.type == "linear":
-            pass
+            print(action)
+            raise Exception("unable to move forward")
             # if action.amount > 0:
             #     return self.move_controller.move_forward(action.amount)
             # elif action.amount < 0:
@@ -43,17 +45,25 @@ class Robot:
 
         raise Exception("Invalid movement action")
 
-    def explore(self) -> RobotState:
-        print("Beginning exploration")
+    def _loop(self): 
         if self.web_interface:
             self.web_interface.update_status(active=True, current_action="Exploring")
 
         initial_snapshot_path = self.camera.take_snapshot()
 
-        description = self.llm.describe_image(initial_snapshot_path, self.state.snapshot_descriptions)
+
+        if self.web_interface:
+            self.web_interface.update_status(active=True, current_action="Analyzing snapshot")
+
+        description = self.llm.describe_image(initial_snapshot_path, self.state.
+        snapshot_descriptions)
+
+        if self.web_interface:
+            self.web_interface.log_snapshot(initial_snapshot_path, description)
+
         self.state.snapshot_descriptions.append(description)
     
-        if len(self.state.snapshot_descriptions) > 5:
+        if len(self.state.snapshot_descriptions) >= 5:
             if self.web_interface:
                 self.web_interface.update_status(active=True, current_action="Summarizing snapshots")
 
@@ -72,5 +82,14 @@ class Robot:
             self.web_interface.update_status(active=True, current_action="Taking action")
 
         self._take_action(action)
+        sleep(1)
+
+    def explore(self, steps=5) -> RobotState:
+        print("Beginning exploration")
+
+        for _ in range(steps):
+            self._loop()
+
+        sleep(5) # stay up briefly
 
         return self.state

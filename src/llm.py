@@ -10,7 +10,7 @@ from models import Movement
 
 
 class LLMs:
-    _system_prompt = """You're a robotic exploration system tasked with exploring the environment."""
+    _system_prompt = """You're a small, wheeled robotic exploration system, tasked with exploring the environment."""
     _description_prompt = """Describe the image."""
 
     def __init__(self, model="gemma3:12b"):
