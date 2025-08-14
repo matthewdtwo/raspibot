@@ -24,7 +24,10 @@ if __name__ == "__main__":
 
     web_interface.update_status(active=False, current_action="Initializing...")
 
-    robot = Robot(move_controller=MoveController(), llm=LLMs(), camera=Camera(persistent_snapshots=True), web_interface=web_interface)
+    camera = Camera(persistent_snapshots=True)
+    web_interface.set_camera(camera)
+    
+    robot = Robot(move_controller=MoveController(), llm=LLMs(), camera=camera, web_interface=web_interface)
 
     report = robot.explore(steps=args.steps)
 

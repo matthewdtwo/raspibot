@@ -15,5 +15,6 @@ dependencies = [
     "picamera2>=0.3.30",
     "sparkfun-qwiic-dual-encoder-reader>=0.0.2",
     "sparkfun-qwiic-icm20948>=2.0.1",
+    "sparkfun-qwiic-otos>=2.0.0",
     "sparkfun-qwiic-scmd>=2.0.0",
 ]

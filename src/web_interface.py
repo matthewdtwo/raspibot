@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, send_from_directory
+from flask import Flask, render_template, jsonify, send_from_directory, Response, stream_with_context
 from flask_socketio import SocketIO, emit
 import json
 import os
@@ -16,9 +16,10 @@ class WebInterface:
         # Disable Flask request logging
         log = logging.getLogger('werkzeug')
         log.setLevel(logging.ERROR)
-        
+            
         self.socketio = SocketIO(self.app, cors_allowed_origins="*", logger=False, engineio_logger=False)
         self.port = port
+        self.camera = None  # will be set later so we don't force init order
         
         # Data storage
         self.conversation_log = []
@@ -35,11 +36,46 @@ class WebInterface:
         os.makedirs('../web_static', exist_ok=True)
         
         self.setup_routes()
+
+    def set_camera(self, camera):
+        """Attach a camera instance after initialization."""
+        self.camera = camera
         
     def setup_routes(self):
         @self.app.route('/')
         def index():
             return render_template('index.html')
+        
+        @self.app.route('/video_feed')
+        def video_feed():
+            """Live MJPEG video stream from the robot camera."""
+            if not self.camera:
+                # Simple empty stream with retry so browser keeps reconnecting until camera attaches
+                def empty_gen():
+                    while not self.camera:
+                        time.sleep(0.5)
+                        yield (b'--frame\r\nContent-Type: text/plain\r\n\r\nCamera starting...\r\n')
+                return Response(stream_with_context(empty_gen()), mimetype='multipart/x-mixed-replace; boundary=frame') # type: ignore
+
+            def generate_frames():
+                # Use a tmpfs location if available for speed
+                tmp_path = '/dev/shm/stream_frame.jpg' if os.path.isdir('/dev/shm') else 'stream_frame.jpg'
+                while True:
+                    try:
+                        if not self.camera:
+                            break
+                        # Capture frame to temporary file then read bytes
+                        self.camera._picam2.capture_file(tmp_path)
+                        with open(tmp_path, 'rb') as f:
+                            frame = f.read()
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                        # Throttle frame rate (approx 5 FPS)
+                        time.sleep(0.2)
+                    except Exception as e:
+                        logging.error(f"Video stream error: {e}")
+                        time.sleep(0.5)
+            return Response(stream_with_context(generate_frames()), mimetype='multipart/x-mixed-replace; boundary=frame')
             
         @self.app.route('/api/status')
         def get_status():
