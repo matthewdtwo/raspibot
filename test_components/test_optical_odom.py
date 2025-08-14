@@ -24,7 +24,7 @@ def runExample():
 
     myOtos.calibrateImu()
 
-    myOtos.setLinearUnit(0)
+    # myOtos.setLinearUnit(0)
     myOtos.resetTracking()
 
     while True:
@@ -32,8 +32,8 @@ def runExample():
 
         print()
         print("Position:")
-        print("X (Meters): {}".format(myPosition.x))
-        print("Y (Meters): {}".format(myPosition.y))
+        print("X (mm): {}".format(myPosition.x * 25.4))
+        print("Y (mm): {}".format(myPosition.y * 25.4))
         print("Heading (Degrees): {}".format(myPosition.h))
 
         time.sleep(0.5)

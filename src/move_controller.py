@@ -4,13 +4,16 @@ import signal
 import atexit
 from typing import Tuple, NamedTuple
 
+from qwiic_otos import QwiicOTOS
+
 from motor_controller import MotorController
 from encoders import Encoders
 from imu import IMU
 
-from models import MovementResult
+from models import ActualMovement, MovementParams, MovementResult, PIDState
 
 from config import (
+    ROTATION_WARNING_ERROR,
     WHEEL_DIAMETER,
     MIN_SPEED,
     MAX_SPEED,
@@ -27,32 +30,19 @@ from config import (
 )
 
 
-class MovementParams(NamedTuple):
-    """Parameters for movement calculations"""
-    wheel_circumference_mm: float
-    pulses_per_mm_L: float
-    pulses_per_mm_R: float
-    target_pulses_L: int
-    target_pulses_R: int
-
-
-class PIDState(NamedTuple):
-    """State for PID controller"""
-    Kp: float = 0.25
-    Ki: float = 0.0
-    Kd: float = 0.02
-    K_steer: float = 0.035
-    dt: float = 0.05
-    tolerance_mm: float = 3.0
-    integral_limit_factor: int = 4
-
-
 class MoveController:
     def __init__(self):
         self.motors = MotorController()
         self.encoders = Encoders()
         self.imu = IMU()
+        self.otos = QwiicOTOS()
+
+        print("Calibrating OTOS IMU...")
+        time.sleep(1)
+        self.otos.calibrateImu()
         
+
+
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
         atexit.register(self.cleanup)
@@ -149,7 +139,7 @@ class MoveController:
 
         return left_speed, right_speed, new_integral, derivative
 
-    def _log_movement_completion(self, direction: str, mm: int, movement_params: MovementParams, is_backward: bool = False) -> MovementResult:
+    def _log_linear_movement_completion(self, direction: str, mm: int, movement_params: MovementParams, is_backward: bool = False) -> MovementResult:
 
         raw_left_final, raw_right_final = self.encoders.get_counts()
         left_final = ENCODER_LEFT_SIGN * raw_left_final
@@ -164,12 +154,22 @@ class MoveController:
             
         error_mm = final_mm - mm
 
-        print(f"{direction.capitalize()} movement completed. Requested: {mm}mm, Actual: {final_mm:.1f}mm, Error: {error_mm:+.1f}mm")
+        otos_pos_y = self.otos.getPosition().y * 25.4
+
+
+        if abs(abs(otos_pos_y) - final_mm) > (mm * 0.25):
+            print(f"Warning: Optical telemetry deviates significantly from encoder readings. Possibly stuck with wheel slippage.")
+
+        print(f"{direction.capitalize()} movement completed. Requested: {mm}mm, Encoders: {final_mm:.1f}mm, Error: {error_mm:+.1f}mm, Optical Telemetry: {otos_pos_y:.1f}mm")
 
         return MovementResult(
             type="linear",
             target=mm,
-            actual=int(final_mm),
+            actual=ActualMovement(
+                measured=int(final_mm),
+                optical=int(otos_pos_y),
+                warning="Optical telemetry deviates significantly from encoder readings. Possibly stuck with wheel slippage." if abs(abs(otos_pos_y) - final_mm) > (mm * 0.25) else None
+            ),
             unit="mm"
         )
 
@@ -199,6 +199,8 @@ class MoveController:
         timeout_s = max(2.0, mm / est_mm_per_s + 1.0)
         start_time = time.time()
         self.encoders.reset_counts()
+
+        self.otos.resetTracking()
 
         try:
             loop_count = 0
@@ -234,7 +236,7 @@ class MoveController:
                 time.sleep(pid_state.dt)
         finally:
             self.motors.stop_motors()
-            return self._log_movement_completion(direction_name, mm, movement_params, is_backward)
+            return self._log_linear_movement_completion(direction_name, mm, movement_params, is_backward)
 
     def rotate_cw(self, deg: int) -> MovementResult:
         return self._execute_rotation(-abs(deg))
@@ -254,18 +256,36 @@ class MoveController:
     def _angle_diff(target, current):
         diff = MoveController._normalize_angle(target - current)
         return diff
+    
+    @staticmethod
+    def _average_angles(angle1, angle2):
+        """Average two angles using circular statistics to handle wraparound correctly."""
+        # Convert to radians
+        rad1 = math.radians(angle1)
+        rad2 = math.radians(angle2)
+        
+        # Convert to unit vectors and average
+        x = (math.cos(rad1) + math.cos(rad2)) / 2
+        y = (math.sin(rad1) + math.sin(rad2)) / 2
+        
+        # Convert back to degrees
+        avg_rad = math.atan2(y, x)
+        return math.degrees(avg_rad)
 
-    def _execute_rotation(self, deg: float, debug: bool = False) -> MovementResult:
-        requested_deg = abs(deg)
+    def _execute_rotation(self, target_rotation_deg: float) -> MovementResult:
+        requested_deg = abs(target_rotation_deg)
 
-        start_heading = self.imu.get_heading()
-        target_heading = self._normalize_angle(start_heading + deg)
+        start_heading = self.imu.get_heading() # absolute
+
+        start_otos_heading = self.otos.getPosition().h # relative
+
+        target_heading = self._normalize_angle(start_heading + target_rotation_deg)
 
         tolerance = 2.0
-        max_turn_time = abs(deg) / 45.0 + 2.0
+        max_turn_time = abs(target_rotation_deg) / 45.0 + 2.0
         dt = 0.05
 
-        turn_direction = 1 if deg > 0 else -1
+        turn_direction = 1 if target_rotation_deg > 0 else -1
         base_speed = TURN_MIN_SPEED + int(0.3 * (TURN_MAX_SPEED - TURN_MIN_SPEED))
         
         start_time = time.time()
@@ -273,6 +293,7 @@ class MoveController:
         try:
             while time.time() - start_time < max_turn_time:
                 current_heading = self.imu.get_heading()
+
                 error = self._angle_diff(target_heading, current_heading)
 
                 # Check if we've reached the target
@@ -293,30 +314,42 @@ class MoveController:
             
             # Timeout reached
             if time.time() - start_time >= max_turn_time:
-                final_heading = self.imu.get_heading()
-                final_error = self._angle_diff(target_heading, final_heading)
-                    
+                final_heading_imu = self.imu.get_heading()
+                final_otos_heading = self.otos.getPosition().h
+                print(f"Warning: Rotation timeout reached. Target: {target_heading:.1f}°, Final(IMU): {final_heading_imu:.1f} deg, Final(OTOS): {final_otos_heading:.1f} deg")
         finally:
             self.motors.stop_motors()
             
             # Calculate actual rotation for return value
-            final_heading = self.imu.get_heading()
-            raw_rotation = self._angle_diff(final_heading, start_heading)
-            actual_rotation = abs(raw_rotation)
-            error_deg = actual_rotation - requested_deg
+            final_heading_imu = self.imu.get_heading()
+            final_otos_heading = self.otos.getPosition().h
             
-            # Return rotation result with debug info
-            print(f"Rotation completed. Requested: {requested_deg:.1f}°, Actual: {actual_rotation:.1f}°, Error: {error_deg:+.1f}° (Start: {start_heading:.1f}°, End: {final_heading:.1f}°)")
+            raw_rotation_imu = self._angle_diff(final_heading_imu, start_heading)
+
+            raw_rotation_otos = self._angle_diff(final_otos_heading, start_otos_heading)
+
+            actual_rotation = abs(self._average_angles(raw_rotation_imu, raw_rotation_otos))
+
+            error_deg = abs(self._angle_diff(actual_rotation, requested_deg))
+
+            warning = f"Large rotation error detected: {error_deg:+.1f}°" if abs(error_deg) > tolerance else None
+
+            if warning:
+                print(warning)
 
             return MovementResult(
                 type="rotation",
                 target=int(requested_deg),
-                actual=int(actual_rotation),
+                actual=ActualMovement(
+                    measured=int(actual_rotation),
+                    optical=int(final_otos_heading),
+                    warning=warning
+                ),
                 unit="deg"
             )
 
 
 # if __name__ == "__main__":
 #     mc = MoveController()
-#     mc.rotate_cw(90)
+#     mc.rotate_ccw(90)
 #     mc.cleanup()

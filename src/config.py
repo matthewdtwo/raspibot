@@ -10,8 +10,7 @@ MAX_SPEED = 255
 TURN_MIN_SPEED = 95   # Slightly higher minimum for better control
 TURN_MAX_SPEED = 110  # Much lower maximum to reduce overshoot
 
-
-WHEEL_DIAMETER = 68 # mm
+WHEEL_DIAMETER = 65 # mm
 TRACK_WIDTH = 220 # mm (center to center of each wheel)
 
 # Per-wheel encoder calibration (measured PPR)
@@ -21,6 +20,8 @@ PULSES_PER_ROTATION_RIGHT = 2339
 # Encoder sign normalization: multiply raw counts by these so forward is positive
 ENCODER_LEFT_SIGN = -1
 ENCODER_RIGHT_SIGN = 1
+
+
 
 OLLAMA_HOST = "http://vengeance.matthewtwo.com:11434"
 TEMPERATURE = 1
