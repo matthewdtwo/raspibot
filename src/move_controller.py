@@ -155,19 +155,13 @@ class MoveController:
 
         otos_pos_y = self.otos.getPosition().y * 25.4
 
-
-        # if abs(abs(otos_pos_y) - final_mm) > (mm * 0.25):
-        #     print(f"Warning: Optical telemetry deviates significantly from encoder readings. You are possibly stuck with wheel slippage.")
-
-        # print(f"{direction.capitalize()} movement completed. Requested: {mm}mm, Encoders: {final_mm:.1f}mm, Error: {error_mm:+.1f}mm, Optical Telemetry: {otos_pos_y:.1f}mm")
-
         return MovementResult(
             type="linear",
             target=mm,
             actual=ActualMovement(
                 measured=int(final_mm),
                 optical=int(abs(otos_pos_y)),
-                warning="Optical telemetry deviates significantly from encoder readings. You are possibly stuck with wheel slippage." if abs(otos_pos_y - final_mm) > (mm * 0.25) else None
+                warning="Optical telemetry deviates significantly from encoder readings. You are possibly stuck with wheel slippage." if abs(abs(otos_pos_y) - final_mm) > (mm * 0.25) else None
             ),
             unit="mm"
         )
@@ -350,7 +344,7 @@ class MoveController:
 
 if __name__ == "__main__":
     mc = MoveController()
-    # mc.move_backward(200)
+    print(mc.move_backward(200))
     print(mc.rotate_cw(120))
     print(mc.move_forward(250))
     mc.cleanup()

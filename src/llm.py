@@ -10,7 +10,7 @@ from config import OLLAMA_HOST, TEMPERATURE
 from models import Response, RobotState
 
 class LLMs:
-    _system_prompt = """You're controlling a small, wheeled robotic exploration system. Your objective is exploring the environment. It is equipped with a motion control system for movement and a vision system for capturing images."""
+    _system_prompt = """You're controlling a small, wheeled robotic exploration system. Your objective is exploring the environment. It is equipped with a motion control system for movement and a vision system for capturing images. If you get stuck, try backing up by using a negative movement command."""
 
     _initial_prompt = """Thoroughly describe what you see, and plan a route to explore the current environment and understand where you are. Describe the potential obstacles and how you might navigate around them. Identify their rough position relative to your view."""
 
