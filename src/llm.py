@@ -68,6 +68,9 @@ class LLMs:
                     print(f"{type(message)} {{image}} - {message.content[1]}")
     
 
+        if len(messages) > 5:
+            messages = messages[-5:]
+
         return messages
 
     def process(self, state: RobotState) -> Response:

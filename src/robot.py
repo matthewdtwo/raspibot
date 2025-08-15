@@ -3,7 +3,7 @@ from time import sleep
 
 from camera import Camera
 from llm import LLMs
-from models import Movement, MovementResult, Observation, RobotState
+from models import ActualMovement, Movement, MovementResult, Observation, RobotState
 from move_controller import MoveController
 from web_interface import WebInterface
 
@@ -36,6 +36,8 @@ class Robot:
                 return self.move_controller.move_forward(action.amount)
             elif action.amount < 0:
                 return self.move_controller.move_backward(abs(action.amount))
+            elif action.amount == 0:
+                return MovementResult(type=action.type, target=0, actual=ActualMovement(measured=0, optical=0, warning=None), unit=action.unit)
             else:
                 print("Invalid linear movement amount")
 

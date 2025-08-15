@@ -17,6 +17,8 @@ if __name__ == "__main__":
     if args.reset:
         reset_snapshots()
     
+    camera = Camera(persistent_snapshots=True)
+
     web_interface = WebInterface(port=5000)
     web_thread = web_interface.run_threaded(debug=False)
     
@@ -24,7 +26,6 @@ if __name__ == "__main__":
 
     web_interface.update_status(active=False, current_action="Initializing...")
 
-    camera = Camera(persistent_snapshots=True)
     web_interface.set_camera(camera)
     
     robot = Robot(move_controller=MoveController(), llm=LLMs(), camera=camera, web_interface=web_interface)

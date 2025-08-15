@@ -166,8 +166,8 @@ class MoveController:
             target=mm,
             actual=ActualMovement(
                 measured=int(final_mm),
-                optical=int(otos_pos_y),
-                warning="Optical telemetry deviates significantly from encoder readings. You are possibly stuck with wheel slippage." if abs(abs(otos_pos_y) - final_mm) > (mm * 0.25) else None
+                optical=int(abs(otos_pos_y)),
+                warning="Optical telemetry deviates significantly from encoder readings. You are possibly stuck with wheel slippage." if abs(otos_pos_y - final_mm) > (mm * 0.25) else None
             ),
             unit="mm"
         )
@@ -321,7 +321,7 @@ class MoveController:
             
             # Calculate actual rotation for return value
             final_heading_imu = self.imu.get_heading()
-            final_otos_heading = self.otos.getPosition().h
+            final_otos_heading = abs(self.otos.getPosition().h)
             
             raw_rotation_imu = self._angle_diff(final_heading_imu, start_heading)
 
@@ -348,7 +348,9 @@ class MoveController:
             )
 
 
-# if __name__ == "__main__":
-#     mc = MoveController()
-#     mc.rotate_ccw(90)
-#     mc.cleanup()
+if __name__ == "__main__":
+    mc = MoveController()
+    # mc.move_backward(200)
+    print(mc.rotate_cw(120))
+    print(mc.move_forward(250))
+    mc.cleanup()
