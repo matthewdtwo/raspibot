@@ -13,7 +13,6 @@ from imu import IMU
 from models import ActualMovement, MovementParams, MovementResult, PIDState
 
 from config import (
-    ROTATION_WARNING_ERROR,
     WHEEL_DIAMETER,
     MIN_SPEED,
     MAX_SPEED,
@@ -157,10 +156,10 @@ class MoveController:
         otos_pos_y = self.otos.getPosition().y * 25.4
 
 
-        if abs(abs(otos_pos_y) - final_mm) > (mm * 0.25):
-            print(f"Warning: Optical telemetry deviates significantly from encoder readings. Possibly stuck with wheel slippage.")
+        # if abs(abs(otos_pos_y) - final_mm) > (mm * 0.25):
+        #     print(f"Warning: Optical telemetry deviates significantly from encoder readings. You are possibly stuck with wheel slippage.")
 
-        print(f"{direction.capitalize()} movement completed. Requested: {mm}mm, Encoders: {final_mm:.1f}mm, Error: {error_mm:+.1f}mm, Optical Telemetry: {otos_pos_y:.1f}mm")
+        # print(f"{direction.capitalize()} movement completed. Requested: {mm}mm, Encoders: {final_mm:.1f}mm, Error: {error_mm:+.1f}mm, Optical Telemetry: {otos_pos_y:.1f}mm")
 
         return MovementResult(
             type="linear",
@@ -168,7 +167,7 @@ class MoveController:
             actual=ActualMovement(
                 measured=int(final_mm),
                 optical=int(otos_pos_y),
-                warning="Optical telemetry deviates significantly from encoder readings. Possibly stuck with wheel slippage." if abs(abs(otos_pos_y) - final_mm) > (mm * 0.25) else None
+                warning="Optical telemetry deviates significantly from encoder readings. You are possibly stuck with wheel slippage." if abs(abs(otos_pos_y) - final_mm) > (mm * 0.25) else None
             ),
             unit="mm"
         )
@@ -332,7 +331,7 @@ class MoveController:
 
             error_deg = abs(self._angle_diff(actual_rotation, requested_deg))
 
-            warning = f"Large rotation error detected: {error_deg:+.1f}°" if abs(error_deg) > tolerance else None
+            warning = f"Large rotation error detected: {error_deg:+.1f} deg. You may be stuck" if abs(error_deg) > tolerance else None
 
             if warning:
                 print(warning)

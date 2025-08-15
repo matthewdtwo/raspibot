@@ -142,14 +142,14 @@ class WebInterface:
         # Emit to connected clients
         self.socketio.emit('status_update', self.robot_status)
     
-    def log_snapshot(self, snapshot_path, description):
+    def log_snapshot(self, snapshot_path, description = None):
         """Log a snapshot with description"""
         filename = os.path.basename(snapshot_path)
         
         # Count how many snapshots we've taken
         snapshot_count = len([msg for msg in self.conversation_log if msg.get('type') == 'snapshot']) + 1
-        
-        self.log_message('snapshot', f'Snapshot {snapshot_count} taken: {description}', {
+
+        self.log_message('snapshot', f'Snapshot {snapshot_count} {f"taken: {description}" if description else ""}', {
             'snapshot_filename': filename,
             'snapshot_url': f'/snapshots/{filename}',
             'snapshot_count': snapshot_count
