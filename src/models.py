@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 class Movement(BaseModel):
     type: Literal["rotation", "linear"]
     unit: Literal["mm", "deg"]
-    amount: int = Field(description="positive for forward / clockwise. negative for backward / counter-clockwise. Rotation limited to +/-180 degrees")
+    amount: int = Field(description="positive for forward / clockwise. negative for backward / counter-clockwise. Rotation limited to +/-180 degrees.")
 
 class Response(BaseModel):
     movement: Movement
